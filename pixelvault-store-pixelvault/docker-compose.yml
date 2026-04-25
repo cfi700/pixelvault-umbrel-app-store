@@ -7,10 +7,7 @@ services:
       APP_PORT: 3000
 
   web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: pixelvault-store-pixelvault:0.5-beta
+    image: cfi700/pixelvault:0.5-beta
     restart: on-failure
     stop_grace_period: 1m
     volumes:

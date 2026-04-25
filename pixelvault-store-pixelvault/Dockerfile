@@ -1,24 +1,15 @@
 FROM node:20-alpine
 
-# Build dependencies for sharp
-RUN apk add --no-cache \
-    vips-dev \
-    python3 \
-    make \
-    g++ \
-    libc6-compat
+RUN apk add --no-cache vips-dev python3 make g++ libc6-compat
 
 WORKDIR /app
 
-# Install node dependencies
 COPY app/backend/package*.json ./app/backend/
 RUN cd app/backend && npm install --production
 
-# Copy application source
 COPY app/backend/ ./app/backend/
 COPY app/frontend/ ./app/frontend/
 
-# Create data directory so it exists even without a volume mount
 RUN mkdir -p /data/photos /data/thumbs /data/sessions
 
 ENV PORT=3000
