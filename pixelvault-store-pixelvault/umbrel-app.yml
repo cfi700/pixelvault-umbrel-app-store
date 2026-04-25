@@ -1,0 +1,45 @@
+manifestVersion: 1
+id: pixelvault-store-pixelvault
+category: files
+name: PixelVault
+version: "0.5-beta"
+tagline: Verschlüsselte private Fotoverwaltung
+description: >-
+  PixelVault speichert deine Fotos AES-256-verschlüsselt auf deinem Umbrel.
+  Alle Bilder werden serverseitig verschlüsselt gespeichert – weder Originale 
+  noch Vorschaubilder liegen im Klartext auf der Festplatte.
+
+
+  Funktionen:
+
+  - AES-256-CBC Verschlüsselung für alle Fotos und Thumbnails
+
+  - Benutzerverwaltung: Admin kann Benutzer anlegen und Sichtbarkeitsrechte vergeben
+
+  - Download-Schutz: Nur der Eigentümer eines Fotos kann es herunterladen
+
+  - Drag & Drop Upload mit Live-Fortschrittsanzeige
+
+  - Responsives, minimalistisches Webinterface
+
+
+  Standard-Login: admin / admin (bitte sofort ändern!)
+
+releaseNotes: >-
+  Erste Version mit verschlüsselter Fotospeicherung, Benutzerverwaltung 
+  und granularen Sichtbarkeitsrechten.
+developer: PixelVault
+website: https://github.com/yourusername/pixelvault-umbrel-app-store
+dependencies: []
+repo: https://github.com/yourusername/pixelvault-umbrel-app-store
+support: https://github.com/yourusername/pixelvault-umbrel-app-store/issues
+port: 3769
+gallery:
+  - 1.jpg
+  - 2.jpg
+  - 3.jpg
+path: ""
+defaultUsername: admin
+defaultPassword: admin
+submitter: Your Name
+submission: https://github.com/yourusername/pixelvault-umbrel-app-store
