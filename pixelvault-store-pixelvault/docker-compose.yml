@@ -1,10 +1,10 @@
-version: "3.7"
-
 services:
   app_proxy:
+    image: getumbrel/umbrel-app-proxy:1.1.2
     environment:
       APP_HOST: pixelvault-store-pixelvault_web_1
       APP_PORT: 3000
+      PROXY_AUTH_ADD: "false"
 
   web:
     image: cfi700/pixelvault:0.5-beta
@@ -18,5 +18,3 @@ services:
       - PORT=3000
       - DATA_DIR=/data
       - NODE_ENV=production
-    ports:
-      - "3769:3000"
