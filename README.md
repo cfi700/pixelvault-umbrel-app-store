@@ -86,3 +86,47 @@ d.h. nach einer Neuinstallation mit demselben Seed sind alle Fotos weiterhin ent
 ## Lizenz
 
 Dieses Projekt steht unter der [MIT-Lizenz](LICENSE).
+
+---
+
+## Windows: Skript ausführen
+
+`chmod` existiert unter Windows nicht. Stattdessen eine der folgenden Optionen nutzen:
+
+### Option A – Git Bash (empfohlen, einfachste Lösung)
+Git für Windows bringt Git Bash mit, das bash-Skripte direkt ausführen kann.
+
+1. [Git für Windows](https://git-scm.com/download/win) installieren (falls noch nicht vorhanden)
+2. [GitHub CLI](https://cli.github.com) installieren
+3. **Git Bash** öffnen (Rechtsklick im Ordner → „Git Bash Here")
+4. Skript starten:
+   ```bash
+   bash setup-github.sh
+   ```
+
+### Option B – PowerShell (ohne Bash)
+Falls kein Git Bash vorhanden ist, die Befehle direkt in PowerShell ausführen:
+
+```powershell
+# 1. In den Projektordner wechseln
+cd pixelvault-umbrel
+
+# 2. GitHub CLI anmelden (einmalig)
+gh auth login
+
+# 3. Repository erstellen und pushen
+git init -b main
+git add -A
+git commit -m "feat: initial release PixelVault v0.5-beta"
+gh repo create pixelvault-umbrel-app-store --public --source=. --remote=origin --push
+git tag -a "v0.5-beta" -m "PixelVault 0.5 Beta – Initial release"
+git push origin v0.5-beta
+gh release create "v0.5-beta" --title "PixelVault 0.5 Beta" --notes "Initial release"
+```
+
+### Option C – WSL (Windows Subsystem for Linux)
+Falls WSL installiert ist:
+```bash
+bash setup-github.sh
+```
+

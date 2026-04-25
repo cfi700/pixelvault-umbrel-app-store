@@ -1,6 +1,6 @@
 FROM node:20-alpine
 
-# Build deps for sharp (image processing) - needed on ARM and x86
+# Build dependencies for sharp
 RUN apk add --no-cache \
     vips-dev \
     python3 \
@@ -10,18 +10,17 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# Copy and install dependencies first (better layer caching)
+# Install node dependencies
 COPY app/backend/package*.json ./app/backend/
-RUN cd app/backend && \
-    npm install --production && \
-    npm rebuild sharp --platform=linux --arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') || \
-    npm install --production
+RUN cd app/backend && npm install --production
 
 # Copy application source
 COPY app/backend/ ./app/backend/
 COPY app/frontend/ ./app/frontend/
 
-# Runtime config
+# Create data directory so it exists even without a volume mount
+RUN mkdir -p /data/photos /data/thumbs /data/sessions
+
 ENV PORT=3000
 ENV DATA_DIR=/data
 ENV NODE_ENV=production
