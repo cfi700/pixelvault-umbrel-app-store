@@ -1,11 +1,4 @@
 services:
-  app_proxy:
-    image: getumbrel/umbrel-app-proxy:1.1.2
-    environment:
-      APP_HOST: pixelvault-store-pixelvault_web_1
-      APP_PORT: 3000
-      PROXY_AUTH_ADD: "false"
-
   web:
     image: cfi700/pixelvault:0.5-beta
     restart: on-failure
