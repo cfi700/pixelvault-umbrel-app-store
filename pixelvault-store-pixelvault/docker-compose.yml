@@ -3,10 +3,11 @@ version: "3.7"
 services:
   app_proxy:
     environment:
-      APP_HOST: pixelvault-store-pixelvault_web_1
+      APP_HOST: pixelvault_web_1
       APP_PORT: 3000
 
   web:
+    build: .
     image: pixelvault-store-pixelvault:0.5-beta
     restart: on-failure
     stop_grace_period: 1m

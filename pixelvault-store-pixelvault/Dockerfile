@@ -1,21 +1,27 @@
 FROM node:20-alpine
 
-# Install build dependencies for sharp (image processing)
-RUN apk add --no-cache vips-dev python3 make g++
+# Build deps for sharp (image processing) - needed on ARM and x86
+RUN apk add --no-cache \
+    vips-dev \
+    python3 \
+    make \
+    g++ \
+    libc6-compat
 
 WORKDIR /app
 
-# Install backend dependencies first (layer caching)
+# Copy and install dependencies first (better layer caching)
 COPY app/backend/package*.json ./app/backend/
-RUN cd app/backend && npm install --production --no-optional
+RUN cd app/backend && \
+    npm install --production && \
+    npm rebuild sharp --platform=linux --arch=$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/') || \
+    npm install --production
 
-# Copy application code
+# Copy application source
 COPY app/backend/ ./app/backend/
 COPY app/frontend/ ./app/frontend/
 
-# Data directory (mounted as volume by Umbrel)
-VOLUME ["/data"]
-
+# Runtime config
 ENV PORT=3000
 ENV DATA_DIR=/data
 ENV NODE_ENV=production

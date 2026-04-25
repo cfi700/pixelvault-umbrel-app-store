@@ -3,43 +3,37 @@ id: pixelvault-store-pixelvault
 category: files
 name: PixelVault
 version: "0.5-beta"
-tagline: Verschlüsselte private Fotoverwaltung
+tagline: Encrypted & private photo vault
 description: >-
-  PixelVault speichert deine Fotos AES-256-verschlüsselt auf deinem Umbrel.
-  Alle Bilder werden serverseitig verschlüsselt gespeichert – weder Originale 
-  noch Vorschaubilder liegen im Klartext auf der Festplatte.
+  PixelVault stores your photos AES-256 encrypted on your Umbrel.
+  All images are encrypted server-side – neither originals nor
+  thumbnails are stored in plain text on disk.
 
+  Features:
 
-  Funktionen:
+  - AES-256-CBC encryption for all photos and thumbnails
 
-  - AES-256-CBC Verschlüsselung für alle Fotos und Thumbnails
+  - Album and sub-album structure with unlimited depth
 
-  - Benutzerverwaltung: Admin kann Benutzer anlegen und Sichtbarkeitsrechte vergeben
+  - User management with per-album access control
 
-  - Download-Schutz: Nur der Eigentümer eines Fotos kann es herunterladen
+  - Download protection: only the owner can download originals
 
-  - Drag & Drop Upload mit Live-Fortschrittsanzeige
+  - DE / EN language toggle
 
-  - Responsives, minimalistisches Webinterface
-
-
-  Standard-Login: admin / admin (bitte sofort ändern!)
+  Default login: admin / admin (change immediately!)
 
 releaseNotes: >-
-  Erste Version mit verschlüsselter Fotospeicherung, Benutzerverwaltung 
-  und granularen Sichtbarkeitsrechten.
+  0.5 Beta: Initial release with encrypted photo storage,
+  album/sub-album structure, user management and granular
+  per-album access rights.
 developer: PixelVault
-website: https://github.com/yourusername/pixelvault-umbrel-app-store
+website: https://github.com/cfi700/pixelvault-umbrel-app-store
 dependencies: []
-repo: https://github.com/yourusername/pixelvault-umbrel-app-store
-support: https://github.com/yourusername/pixelvault-umbrel-app-store/issues
+repo: https://github.com/cfi700/pixelvault-umbrel-app-store
+support: https://github.com/cfi700/pixelvault-umbrel-app-store/issues
 port: 3769
-gallery:
-  - 1.jpg
-  - 2.jpg
-  - 3.jpg
+gallery: []
 path: ""
 defaultUsername: admin
 defaultPassword: admin
-submitter: Your Name
-submission: https://github.com/yourusername/pixelvault-umbrel-app-store
