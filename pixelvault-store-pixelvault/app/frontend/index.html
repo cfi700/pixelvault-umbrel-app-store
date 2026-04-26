@@ -941,12 +941,12 @@ async function loadAlbumContent(albumId){
     <button class="btn btn-ghost btn-sm" onclick="downloadSelected()" id="btn-dl" style="display:none">${t('selection.download')}</button>
     <button class="btn btn-ghost btn-sm" onclick="shareSelected(true)"  id="btn-share"    style="display:none">${t('selection.share')}</button>
     <button class="btn btn-ghost btn-sm" onclick="shareSelected(false)" id="btn-unshare"  style="display:none">${t('selection.unshare')}</button>
-    <button class="btn btn-danger btn-sm" onclick="deleteSelected()" id="btn-del-sel" style="display:none">${t('selection.delete')}</button>\`;
+    <button class="btn btn-danger btn-sm" onclick="deleteSelected()" id="btn-del-sel" style="display:none">${t('selection.delete')}</button>`;
   content.appendChild(selBar);
 
   // ── Upload progress ──
   const prog=document.createElement('div');prog.className='upload-progress';prog.id='upload-progress';
-  prog.innerHTML=`<span id="upload-status"></span><div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>`;
+  prog.innerHTML='<span id="upload-status"></span><div class="progress-wrap"><div class="progress-bar" id="progress-bar"></div></div>';
   content.appendChild(prog);
 
   // ── Sub-albums ──
@@ -954,9 +954,10 @@ async function loadAlbumContent(albumId){
     const sg=document.createElement('div');sg.className='subalbum-grid';
     subAlbums.forEach(sub=>{
       const sc=document.createElement('div');sc.className='subalbum-card';
-      sc.innerHTML=`<span class="sa-icon">${albumChildren(sub.id).length?'📂':'📁'}</span>
-        <span class="sa-name" title="${esc(sub.name)}">${esc(sub.name)}</span>
-        <span class="sa-count">${t('albums.photos_count',sub.photoCount)}</span>`;
+      const saIcon = document.createElement('span'); saIcon.className='sa-icon'; saIcon.textContent=albumChildren(sub.id).length?'📂':'📁';
+      const saName = document.createElement('span'); saName.className='sa-name'; saName.title=sub.name; saName.textContent=sub.name;
+      const saCount = document.createElement('span'); saCount.className='sa-count'; saCount.textContent=t('albums.photos_count',sub.photoCount);
+      sc.appendChild(saIcon); sc.appendChild(saName); sc.appendChild(saCount);
       sc.addEventListener('click',()=>selectAlbum(sub.id));sg.appendChild(sc);
     });
     content.appendChild(sg);
