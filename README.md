@@ -26,7 +26,7 @@ pixelvault-store-pixelvault/
 
 ```bash
 cd ~/pixelvault-store-pixelvault
-docker build -t pixelvault-store-pixelvault:0.5-beta .
+docker build -t pixelvault-store-pixelvault:0.6-beta .
 ```
 
 ### 2. Community App Store in Umbrel hinzufügen
@@ -117,11 +117,11 @@ gh auth login
 # 3. Repository erstellen und pushen
 git init -b main
 git add -A
-git commit -m "feat: initial release PixelVault v0.5-beta"
+git commit -m "feat: initial release PixelVault v0.6-beta"
 gh repo create pixelvault-umbrel-app-store --public --source=. --remote=origin --push
-git tag -a "v0.5-beta" -m "PixelVault 0.5 Beta – Initial release"
-git push origin v0.5-beta
-gh release create "v0.5-beta" --title "PixelVault 0.5 Beta" --notes "Initial release"
+git tag -a "v0.6-beta" -m "PixelVault 0.5 Beta – Initial release"
+git push origin v0.6-beta
+gh release create "v0.6-beta" --title "PixelVault 0.5 Beta" --notes "Initial release"
 ```
 
 ### Option C – WSL (Windows Subsystem for Linux)

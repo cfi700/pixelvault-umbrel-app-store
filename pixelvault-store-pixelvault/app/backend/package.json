@@ -1,6 +1,6 @@
 {
   "name": "pixelvault",
-  "version": "0.5-beta",
+  "version": "0.6-beta",
   "description": "Encrypted photo vault for Umbrel",
   "main": "server.js",
   "scripts": {

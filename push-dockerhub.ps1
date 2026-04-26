@@ -8,7 +8,7 @@
 
 $DOCKERHUB_USER = "cfi700"
 $IMAGE_NAME     = "pixelvault"
-$IMAGE_TAG      = "0.5-beta"
+$IMAGE_TAG      = "0.6-beta"
 $FULL_IMAGE     = "${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
 
 Write-Host ""

@@ -19,7 +19,7 @@ die()  { echo -e "${RED}✗ Fehler:${NC} $*"; exit 1; }
 
 DOCKERHUB_USER="cfi700"
 IMAGE_NAME="pixelvault"
-IMAGE_TAG="0.5-beta"
+IMAGE_TAG="0.6-beta"
 FULL_IMAGE="${DOCKERHUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
 
 echo -e "\n${BOLD}🐳 PixelVault – Docker Hub Build & Push${NC}"

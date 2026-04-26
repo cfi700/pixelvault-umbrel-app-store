@@ -2,7 +2,7 @@ manifestVersion: 1
 id: pixelvault-store-pixelvault
 category: files
 name: PixelVault
-version: "0.5-beta"
+version: "0.6-beta"
 tagline: Encrypted & private photo vault
 description: >-
   PixelVault stores your photos AES-256 encrypted on your Umbrel.
@@ -24,9 +24,11 @@ description: >-
   Default login: admin / admin (change immediately!)
 
 releaseNotes: >-
-  0.5 Beta: Initial release with encrypted photo storage,
-  album/sub-album structure, user management and granular
-  per-album access rights.
+  0.6 Beta – New features and fixes:
+  Multi-file upload (up to 50 files), photo sharing to shared album,
+  download protection (right-click block, canvas rendering, watermark),
+  touch swipe gestures in lightbox, improved gallery UI with
+  checkbox selection and compact upload button.
 developer: PixelVault
 website: https://github.com/cfi700/pixelvault-umbrel-app-store
 dependencies: []
