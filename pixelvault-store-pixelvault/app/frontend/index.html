@@ -157,9 +157,7 @@
   .photo-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
   .photo-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;
     overflow:hidden;transition:all .15s;position:relative;cursor:pointer}
-  /* Invisible click-catcher overlay on photo area - allows checkbox but blocks right-click on img */
-  .photo-img-wrap{position:relative;width:100%}
-  .photo-img-wrap::after{content:'';position:absolute;inset:0;z-index:1}
+  .photo-img-wrap{position:relative;width:100%;cursor:pointer}
   .photo-card:hover{border-color:var(--muted)}
   .photo-card.selected{border-color:var(--accent);box-shadow:0 0 0 2px rgba(200,169,110,.3)}
 
@@ -175,7 +173,7 @@
   .photo-check-icon{color:#0d0c08;font-size:12px;font-weight:700;display:none}
   .photo-card.selected .photo-check-icon{display:block}
 
-  .photo-thumb{width:100%;aspect-ratio:1;object-fit:cover;background:var(--surface2);display:block}
+  .photo-thumb{width:100%;aspect-ratio:1;object-fit:cover;background:var(--surface2);display:block;cursor:pointer;user-select:none;-webkit-user-drag:none}
   .thumb-placeholder{width:100%;aspect-ratio:1;background:var(--surface2);display:flex;
     align-items:center;justify-content:center;font-size:28px;color:var(--dim)}
   .thumb-loading{animation:pulse 1.5s infinite}
@@ -687,6 +685,7 @@ function updateLoggedInLabel(){const el=document.getElementById('logged-in-label
 // ═══════════════════════════════════════════════════════════════════
 let me=null,allAlbums=[],allUsers=[],currentAlbumId=null,currentPhotos=[];
 let expandedAlbums=new Set(),selectedPhotos=new Set();
+let lbThumbCache={};  // persistent thumb URL cache per photo id
 let albumPermTargetId=null,resetTargetId=null;
 let albumModalMode=null,albumModalParentId=null,albumModalEditId=null;
 // Lightbox state
@@ -983,28 +982,81 @@ async function loadPhotos(albumId,wrap){
     if(!currentPhotos.length){wrap.innerHTML=`<div class="empty-state"><div class="e-icon">📷</div><p>${t('albums.empty')}</p></div>`;return;}
     wrap.innerHTML='<div class="photo-grid" id="photo-grid"></div>';
     const grid=document.getElementById('photo-grid');
+    const isSharedAlbum = albumId === '__shared__';
+
     currentPhotos.forEach((p,i)=>{
       const isOwn=p.ownerId===me.id;
-      const card=document.createElement('div');card.className='photo-card';card.dataset.photoId=p.id;card.dataset.idx=i;
-      card.innerHTML=`
-        <div class="photo-img-wrap">
-          <div class="photo-check" onclick="toggleSelect(event,'${p.id}')"><span class="photo-check-icon">✓</span></div>
-          ${p.shared?'<span class="shared-badge">'+t('photo.shared_badge')+'</span>':''}
-          <div class="thumb-placeholder thumb-loading" id="tp-${p.id}">🖼</div>
-        </div>
-        <div class="photo-info">
-          <div class="photo-name" title="${esc(p.originalName)}">${esc(p.originalName)}</div>
-          <div class="photo-meta">
-            <span>${fmtDate(p.uploadedAt)}</span>
-            ${!isOwn?`<span class="owner-tag">${esc(p.ownerName)}</span>`:''}
-          </div>
-        </div>`;
-      // Click on image area opens lightbox
-      card.querySelector('.thumb-placeholder').addEventListener('click',()=>openLightbox(i));
+      const card=document.createElement('div');
+      card.className='photo-card';
+      card.dataset.photoId=p.id;
+      card.dataset.idx=i;
+
+      // ── Image wrap ──
+      const imgWrap=document.createElement('div');
+      imgWrap.className='photo-img-wrap';
+
+      // Checkbox – only for non-shared albums (shared album = view only)
+      if(!isSharedAlbum){
+        const chk=document.createElement('div');
+        chk.className='photo-check';
+        chk.innerHTML='<span class="photo-check-icon">✓</span>';
+        chk.addEventListener('click',e=>toggleSelect(e,p.id));
+        imgWrap.appendChild(chk);
+      }
+
+      // Shared badge
+      if(p.shared){
+        const badge=document.createElement('span');
+        badge.className='shared-badge';
+        badge.textContent=t('photo.shared_badge');
+        imgWrap.appendChild(badge);
+      }
+
+      // Placeholder (replaced by thumb after load)
+      const ph=document.createElement('div');
+      ph.className='thumb-placeholder thumb-loading';
+      ph.id='tp-'+p.id;
+      ph.textContent='🖼';
+      imgWrap.appendChild(ph);
+
+      // Click on image wrap → lightbox (whole area, not just img)
+      imgWrap.addEventListener('click', e=>{
+        // Don't open lightbox if clicking the checkbox
+        if(e.target.closest('.photo-check')) return;
+        openLightbox(i);
+      });
+
+      card.appendChild(imgWrap);
+
+      // ── Info ──
+      const info=document.createElement('div');
+      info.className='photo-info';
+      const nameEl=document.createElement('div');
+      nameEl.className='photo-name';
+      nameEl.title=p.originalName;
+      nameEl.textContent=p.originalName;
+      const metaEl=document.createElement('div');
+      metaEl.className='photo-meta';
+      const dateSpan=document.createElement('span');
+      dateSpan.textContent=fmtDate(p.uploadedAt);
+      metaEl.appendChild(dateSpan);
+      if(!isOwn){
+        const ownerSpan=document.createElement('span');
+        ownerSpan.className='owner-tag';
+        ownerSpan.textContent=p.ownerName;
+        metaEl.appendChild(ownerSpan);
+      }
+      info.appendChild(nameEl);
+      info.appendChild(metaEl);
+      card.appendChild(info);
+
       grid.appendChild(card);
       loadThumb(p.id,i);
     });
-  }catch{wrap.innerHTML=`<div class="empty-state"><p>${t('error')}</p></div>`;}
+  }catch(e){
+    console.error('loadPhotos error:',e);
+    wrap.innerHTML=`<div class="empty-state"><p>${t('error')}</p></div>`;
+  }
 }
 
 // ── SELECTION ───────────────────────────────────────────────────────
@@ -1121,13 +1173,20 @@ async function handleFiles(files){
 async function loadThumb(id,idx){
   try{
     const r=await fetch(`/api/photos/${id}/thumb`);if(!r.ok)return;
-    const url=URL.createObjectURL(await r.blob());
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
     lbThumbUrls[id]=url;
     const ph=document.getElementById(`tp-${id}`);if(!ph)return;
-    const img=document.createElement('img');img.className='photo-thumb';img.src=url;img.alt='';
-    img.addEventListener('click',()=>openLightbox(idx));
+    const img=document.createElement('img');
+    img.className='photo-thumb';
+    img.src=url;
+    img.alt='';
+    img.draggable=false;
+    // Click is handled by parent imgWrap - img itself passes event up
     ph.replaceWith(img);
-  }catch{}
+    // Also cache for strip
+    lbThumbCache[id]=url;
+  }catch(e){console.warn('loadThumb error:',id,e);}
 }
 
 // ═══════════════════════════════════════════════════════════════════
