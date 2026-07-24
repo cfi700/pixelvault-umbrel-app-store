@@ -1284,14 +1284,23 @@ async function checkSession(){
     bootApp();
   }catch{}
 }
-// ── Android/Browser Zurück-Navigation (Guard-Pattern, v1.9.7) ────────
-// Genau EIN Guard-Eintrag liegt permanent oben auf dem History-Stack.
-// Jeder Hardware-Zurück-Druck (popstate) führt genau einen In-App-Schritt
-// aus (Lightbox → Modal → Album-Ebene hoch) und legt den Guard sofort
-// wieder nach. Die App-Navigationstiefe wird NICHT mehr im History-Stack
-// abgebildet (kein pushState beim Album-/Lightbox-Öffnen) – damit können
-// Stack und App-Zustand nie auseinanderlaufen (Ursache des 1.9.4-Bugs,
-// bei dem jeder 2. Zurück-Druck die App verließ).
+// ── Android/Browser Zurück-Navigation (Forward-Trap, v1.10.1) ────────
+// Es existieren dauerhaft genau ZWEI History-Einträge: Basis + Guard.
+// Ein Hardware-Zurück-Druck navigiert vom Guard auf die Basis (popstate
+// mit state 'base'); wir führen genau einen In-App-Schritt aus (Lightbox
+// → Modal → Album-Ebene hoch) und kehren per history.forward() auf den
+// WEITERHIN EXISTIERENDEN Guard-Eintrag zurück (Rückwärts-Navigation
+// zerstört den Vorwärts-Eintrag nicht). Das dadurch ausgelöste popstate
+// mit state 'guard' wird ignoriert.
+// WICHTIG: Im Handler wird bewusst KEIN pushState mehr aufgerufen –
+// Chrome auf Android verwirft ein pushState während der Verarbeitung
+// einer Zurück-Geste teils stillschweigend (History Manipulation
+// Intervention / Renderer-Race). Genau das ließ ab dem 2. Druck die
+// App schließen: Der 1. Druck wurde verarbeitet, der nachgelegte Guard
+// ging verloren, der 2. Druck verließ die Seite (Bug in 1.9.7–1.10.0).
+// Traversierung (forward) statt Neuanlage (pushState) ist davon nicht
+// betroffen. Die App-Navigationstiefe wird weiterhin NICHT im
+// History-Stack abgebildet.
 // Startansicht: erster Druck zeigt einen Hinweis, ein zweiter Druck
 // innerhalb von 2 Sekunden verlässt die App wirklich.
 let navReady=false,navExitArmed=false;
@@ -1299,20 +1308,22 @@ function setupBackNav(){
   if(navReady)return; navReady=true;
   history.replaceState({v:'base'},'');
   history.pushState({v:'guard'},'');
-  window.addEventListener('popstate',()=>{
+  window.addEventListener('popstate',(e)=>{
+    if(e.state&&e.state.v==='guard')return;   // Rückkehr auf den Guard (unser forward) – ignorieren
+    // state 'base' (oder unbekannt): der Nutzer hat Zurück gedrückt
     if(handleInAppBack()){
       navExitArmed=false;
-      history.pushState({v:'guard'},'');   // Guard sofort wieder auflegen
+      history.forward();   // auf den bestehenden Guard zurückkehren
       return;
     }
     // Startansicht erreicht → Verlassen nur nach doppeltem Druck
     if(!navExitArmed){
       navExitArmed=true;
-      history.pushState({v:'guard'},'');   // noch eine Chance geben
+      history.forward();   // noch eine Chance geben
       toast(t('nav.back_exit'));
       setTimeout(()=>{navExitArmed=false;},2000);
     }else{
-      history.back();   // Basis-Eintrag verlassen → App/Tab wird beendet
+      history.back();   // von der Basis aus wirklich verlassen
     }
   });
 }
@@ -2028,7 +2039,8 @@ async function loadPhotos(albumId,wrap){
       info.appendChild(metaEl);
       card.appendChild(info);
 
-      if(p.linkedHere){
+      // Link-Badge nur für Hauptbenutzer/Admin (Beobachter: nutzlos, Server liefert ohnehin linkedHere=false)
+      if(p.linkedHere&&!(me&&me.type==='observer')){
         const lk=document.createElement('div');lk.className='link-badge';lk.textContent='🔗';
         lk.title=t('link.badge_title');imgWrap.appendChild(lk);
       }
@@ -2386,9 +2398,14 @@ function renderLightbox(){
   // Canvas-based rendering: prevents "Save image as" from getting a usable URL
   const canvas=document.getElementById('lightbox-img');
   const vid=document.getElementById('lb-video');
+  const ov=document.getElementById('lb-img-overlay');
   // ── Video-Wiedergabe ──
   if(p.mimeType&&p.mimeType.startsWith('video/')){
     canvas.style.display='none';
+    // Overlay ausblenden: es würde alle Touches/Klicks schlucken (closeLightbox)
+    // und die nativen Video-Controls (Spulen, Pause) unbedienbar machen.
+    // Schutz bleibt: globaler contextmenu-Block in #lightbox + controlsList="nodownload".
+    if(ov)ov.style.display='none';
     vid.style.display='block';
     // Längste Kante auf LB_MAX_VIDEO_PX begrenzen; das <video>-Element
     // erhält das Aspect Ratio innerhalb der max-Grenzen selbst
@@ -2412,8 +2429,9 @@ function renderLightbox(){
     }
     return;
   }
-  // ── Foto: Video stoppen und verstecken ──
+  // ── Foto: Video stoppen und verstecken, Overlay wieder aktivieren ──
   if(vid){vid.pause();vid.style.display='none';if(vid._url){URL.revokeObjectURL(vid._url);vid._url=null;}vid.src='';}
+  if(ov)ov.style.display='';
   canvas.style.display='block';
   const ctx=canvas.getContext('2d');
   ctx.clearRect(0,0,canvas.width,canvas.height);
@@ -2495,8 +2513,11 @@ function closeLightbox(){
 document.addEventListener('keydown',e=>{
   const lb=document.getElementById('lightbox');
   if(!lb.classList.contains('open'))return;
-  if(e.key==='ArrowRight'||e.key==='ArrowDown')lbNavigate(1);
-  else if(e.key==='ArrowLeft'||e.key==='ArrowUp')lbNavigate(-1);
+  // Bei sichtbarem Video: Pfeiltasten dem nativen Spulen überlassen
+  const v=document.getElementById('lb-video');
+  const videoActive=v&&v.style.display!=='none';
+  if(!videoActive&&(e.key==='ArrowRight'||e.key==='ArrowDown'))lbNavigate(1);
+  else if(!videoActive&&(e.key==='ArrowLeft'||e.key==='ArrowUp'))lbNavigate(-1);
   else if(e.key==='Escape')closeLightbox();
 });
 
@@ -2522,6 +2543,11 @@ document.getElementById('lb-img-overlay').addEventListener('click',()=>closeLigh
     const dy=e.changedTouches[0].clientY-touchStartY;
     const dt=Date.now()-touchStartTime;
     const absDx=Math.abs(dx),absDy=Math.abs(dy);
+    const target=e.changedTouches[0].target;
+
+    // Touches auf dem Video gehören den nativen Controls (Scrubbing/Play):
+    // weder Swipe-Navigation noch Schließen auslösen
+    if(target&&target.closest&&target.closest('#lb-video'))return;
 
     // Must be fast enough (<400ms), horizontal enough (2x more than vertical)
     // and long enough (>40px) to count as a swipe
@@ -2531,7 +2557,6 @@ document.getElementById('lb-img-overlay').addEventListener('click',()=>closeLigh
     }
     // Short tap on background (not on image/controls) → close
     else if(dt<200&&absDx<10&&absDy<10){
-      const target=e.changedTouches[0].target;
       if(target===lb||target.id==='lb-img-overlay')closeLightbox();
     }
   },{passive:true});

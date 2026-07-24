@@ -20,7 +20,7 @@ const FileStore = require('session-file-store')(session);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = '1.10.0';
+const APP_VERSION = '1.10.3';
 
 const DATA_DIR     = process.env.DATA_DIR || '/data';
 const PHOTOS_DIR   = path.join(DATA_DIR, 'photos');
@@ -1086,7 +1086,9 @@ app.get('/api/albums/:albumId/photos', requireAuth, (req, res) => {
   const mapPhoto = p => {
     const owner = db.users.find(u => u.id === p.ownerId);
     const keyInfo = resolveReadKey(db, p, req);
-    return { id: p.id, albumId: p.albumId, linkedHere: p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, size: p.size,
+    // Beobachter erhalten kein linkedHere: das Link-Badge ist für sie nutzlos
+    // (keine Link-Verwaltung, kein "Folgen") und verrät nur Album-Organisation.
+    return { id: p.id, albumId: p.albumId, linkedHere: me.type !== 'observer' && p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, size: p.size,
       ownerId: p.ownerId, ownerName: owner?.username ?? '?', shared: p.shared || false,
       mimeType: p.mimeType || 'image/jpeg',
       streamable: p.encFormat === 'chunked',
