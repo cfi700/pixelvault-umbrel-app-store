@@ -405,7 +405,7 @@
   <div class="login-card">
     <div class="login-logo">
       <span class="icon">🖼</span>
-      <h1>Vermeer</h1>
+      <h1 id="login-title">Vermeer</h1>
       <p data-i18n="login.tagline"></p>
     </div>
     <div class="form-group">
@@ -484,12 +484,13 @@
 <!-- APP -->
 <div id="app">
   <nav class="navbar">
-    <div class="navbar-brand">🖼 Vermeer</div>
+    <div class="navbar-brand">🖼 <span id="brand-name">Vermeer</span></div>
     <div class="navbar-nav">
       <button class="nav-btn active" id="nav-albums"  onclick="showPage('albums')"  data-i18n="nav.albums"></button>
       <button class="nav-btn"        id="nav-users"   onclick="showPage('users')"   data-i18n="nav.users" style="display:none"></button>
       <button class="nav-btn"        id="nav-observers" onclick="showPage('observers')" data-i18n="nav.observers" style="display:none"></button>
       <button class="nav-btn"        id="nav-stats"   onclick="showPage('stats')"   data-i18n="nav.stats" style="display:none"></button>
+      <button class="nav-btn"        id="nav-settings" onclick="showPage('settings')" data-i18n="nav.settings" style="display:none"></button>
       <button class="nav-btn"        id="nav-account" onclick="showPage('account')" data-i18n="nav.account"></button>
     </div>
     <div class="navbar-right">
@@ -600,6 +601,49 @@
     </div>
     <div id="stats-content">
       <div class="empty-state"><div class="e-icon">⏳</div><p data-i18n="loading"></p></div>
+    </div>
+  </div>
+
+  <!-- SETTINGS PAGE (admin only, ab 1.11.0) -->
+  <div class="page" id="page-settings">
+    <div class="page-header"><h2 class="page-title" data-i18n="gset.title"></h2></div>
+    <div class="card" style="max-width:520px">
+      <div class="card-header" data-i18n="gset.branding"></div>
+      <div style="padding:20px">
+        <div class="form-group">
+          <label data-i18n="gset.name"></label>
+          <input type="text" id="gset-name" maxlength="40">
+          <p style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="gset.name_hint"></p>
+        </div>
+      </div>
+    </div>
+    <div class="card" style="max-width:520px">
+      <div class="card-header" data-i18n="gset.display"></div>
+      <div style="padding:20px">
+        <div class="form-group">
+          <label data-i18n="gset.photo_px"></label>
+          <input type="number" id="gset-photo-px" min="400" max="4000" step="50">
+        </div>
+        <div class="form-group">
+          <label data-i18n="gset.video_px"></label>
+          <input type="number" id="gset-video-px" min="400" max="4000" step="50">
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="gset.px_hint"></p>
+      </div>
+    </div>
+    <div class="card" style="max-width:520px">
+      <div class="card-header" data-i18n="gset.thumbs"></div>
+      <div style="padding:20px">
+        <div class="form-group">
+          <label data-i18n="gset.thumb_px"></label>
+          <input type="number" id="gset-thumb-px" min="200" max="800" step="50">
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="gset.thumb_hint"></p>
+      </div>
+    </div>
+    <div style="max-width:520px;display:flex;gap:10px;align-items:center">
+      <button class="btn btn-primary" onclick="saveGallerySettings()" data-i18n="gset.save"></button>
+      <span id="gset-msg" style="font-size:13px;color:var(--muted)"></span>
     </div>
   </div>
 
@@ -840,7 +884,17 @@ const T = {
     'login.tagline':'Verschlüsselte Fotoverwaltung','login.username':'Benutzername',
     'login.password':'Passwort','login.submit':'Anmelden',
     'login.err.invalid':'Ungültige Anmeldedaten','login.err.connection':'Verbindungsfehler',
-    'nav.albums':'Alben','nav.users':'Benutzer','nav.account':'Konto',
+    'nav.albums':'Alben','nav.users':'Benutzer','nav.account':'Konto','nav.settings':'Einstellungen',
+    'gset.title':'Galerie-Einstellungen','gset.branding':'Galerie',
+    'gset.name':'Galeriename','gset.name_hint':'Wird auf dem Login-Screen, in der Navigation, im Seitentitel und im Wasserzeichen angezeigt (max. 40 Zeichen).',
+    'gset.display':'Darstellung (Lightbox)',
+    'gset.photo_px':'Fotos: max. Kantenlänge in Pixel (400–4000)',
+    'gset.video_px':'Videos: max. Kantenlänge in Pixel (400–4000)',
+    'gset.px_hint':'Begrenzt die längste Kante in der Großansicht. Der Bildschirm bleibt immer die engere Grenze; die Originale sind nicht betroffen.',
+    'gset.thumbs':'Kacheln',
+    'gset.thumb_px':'Thumbnail-/Poster-Größe in Pixel (200–800)',
+    'gset.thumb_hint':'Gilt nur für neu hochgeladene Fotos und Videos. Bestehende Kacheln behalten ihre Größe.',
+    'gset.save':'Speichern','gset.saved':'Gespeichert ✓','gset.error':'Fehler beim Speichern',
     'nav.logout':'Abmelden','nav.loggedinas':'Angemeldet als',
     'nav.back_exit':'Erneut drücken zum Verlassen',
     'albums.title':'Fotoalben','albums.new_root':'+ Neues Album',
@@ -973,7 +1027,7 @@ const T = {
     'hide.pin_invalid':'PIN muss genau 4 Ziffern haben',
     'tile.hidden_album':'Verstecktes Album','tile.subalbums':(n)=>`${n} Unteralbum${n!==1?'en':''}`,
     'settings.title':'Anzeige','settings.watermark':'Wasserzeichen in der Großansicht anzeigen',
-    'settings.watermark_hint':'Blendet „Vermeer · Benutzername“ halbtransparent über Fotos in der Lightbox ein.',
+    'settings.watermark_hint':'Blendet „Galeriename · Benutzername“ halbtransparent über Fotos in der Lightbox ein.',
     'export.btn':'📦 Alle meine Fotos exportieren (ZIP)','export.hint':'Lädt alle deine Fotos entschlüsselt als ZIP-Archiv herunter – sortiert nach Alben.',
     'home.title':'⌂ Alben','album.locked_toast':'Album ist gesperrt – PIN erforderlich',
     'relogin.required':'Sitzungsschlüssel fehlt – bitte neu anmelden',
@@ -982,7 +1036,17 @@ const T = {
     'login.tagline':'Encrypted Photo Management','login.username':'Username',
     'login.password':'Password','login.submit':'Sign In',
     'login.err.invalid':'Invalid credentials','login.err.connection':'Connection error',
-    'nav.albums':'Albums','nav.users':'Users','nav.account':'Account',
+    'nav.albums':'Albums','nav.users':'Users','nav.account':'Account','nav.settings':'Settings',
+    'gset.title':'Gallery Settings','gset.branding':'Gallery',
+    'gset.name':'Gallery name','gset.name_hint':'Shown on the login screen, in the navigation, in the page title and in the watermark (max. 40 characters).',
+    'gset.display':'Display (lightbox)',
+    'gset.photo_px':'Photos: max. edge length in pixels (400–4000)',
+    'gset.video_px':'Videos: max. edge length in pixels (400–4000)',
+    'gset.px_hint':'Limits the longest edge in the full view. The screen always remains the tighter limit; originals are not affected.',
+    'gset.thumbs':'Tiles',
+    'gset.thumb_px':'Thumbnail / poster size in pixels (200–800)',
+    'gset.thumb_hint':'Applies only to newly uploaded photos and videos. Existing tiles keep their size.',
+    'gset.save':'Save','gset.saved':'Saved ✓','gset.error':'Error while saving',
     'nav.logout':'Sign Out','nav.loggedinas':'Signed in as',
     'nav.back_exit':'Press back again to exit',
     'albums.title':'Photo Albums','albums.new_root':'+ New Album',
@@ -1115,7 +1179,7 @@ const T = {
     'hide.pin_invalid':'PIN must be exactly 4 digits',
     'tile.hidden_album':'Hidden album','tile.subalbums':(n)=>`${n} sub-album${n!==1?'s':''}`,
     'settings.title':'Display','settings.watermark':'Show watermark in full view',
-    'settings.watermark_hint':'Overlays “Vermeer · username” semi-transparently on photos in the lightbox.',
+    'settings.watermark_hint':'Overlays “gallery name · username” semi-transparently on photos in the lightbox.',
     'export.btn':'📦 Export all my photos (ZIP)','export.hint':'Downloads all your photos decrypted as a ZIP archive – organized by album.',
     'home.title':'⌂ Albums','album.locked_toast':'Album is locked – PIN required',
     'relogin.required':'Session key missing – please log in again',
@@ -1265,6 +1329,49 @@ async function doRecover(){
 }
 document.getElementById('l-pass').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
 async function doLogout(){await fetch('/api/logout',{method:'POST'});location.reload();}
+// ── Galerie-Einstellungen (1.11.0) ──────────────────────────────────
+// Server-Defaults gespiegelt; wird beim Start und nach dem Speichern
+// aktualisiert. LB-Größen werden in renderLightbox live gelesen.
+let appSettings={galleryName:'Vermeer',lbMaxPhotoPx:1200,lbMaxVideoPx:800,thumbSize:400};
+function applyAppSettings(){
+  const n=appSettings.galleryName||'Vermeer';
+  document.title=n;
+  const lt=document.getElementById('login-title');if(lt)lt.textContent=n;
+  const bn=document.getElementById('brand-name');if(bn)bn.textContent=n;
+}
+async function loadAppSettings(){
+  try{
+    const r=await fetch('/api/settings');
+    if(r.ok){appSettings=Object.assign(appSettings,await r.json());}
+  }catch{}
+  applyAppSettings();
+}
+function fillGallerySettingsForm(){
+  document.getElementById('gset-name').value=appSettings.galleryName;
+  document.getElementById('gset-photo-px').value=appSettings.lbMaxPhotoPx;
+  document.getElementById('gset-video-px').value=appSettings.lbMaxVideoPx;
+  document.getElementById('gset-thumb-px').value=appSettings.thumbSize;
+  document.getElementById('gset-msg').textContent='';
+}
+async function saveGallerySettings(){
+  const msg=document.getElementById('gset-msg');msg.textContent='…';
+  const body={
+    galleryName:document.getElementById('gset-name').value.trim(),
+    lbMaxPhotoPx:parseInt(document.getElementById('gset-photo-px').value,10),
+    lbMaxVideoPx:parseInt(document.getElementById('gset-video-px').value,10),
+    thumbSize:parseInt(document.getElementById('gset-thumb-px').value,10)
+  };
+  try{
+    const r=await api('PUT','/api/settings',body);
+    const data=await r.json();
+    if(!r.ok){msg.textContent=data.error||t('gset.error');return;}
+    appSettings=Object.assign(appSettings,data);
+    applyAppSettings();fillGallerySettingsForm();
+    msg.textContent=t('gset.saved');
+    setTimeout(()=>{if(msg.textContent===t('gset.saved'))msg.textContent='';},3000);
+  }catch{msg.textContent=t('gset.error');}
+}
+
 async function checkSession(){
   try{
     const r=await fetch('/api/me');
@@ -1389,6 +1496,7 @@ function bootApp(){
   if(me.type==='admin'){
     document.getElementById('admin-pill').style.display='inline-block';
     document.getElementById('nav-users').style.display='inline-block';
+    document.getElementById('nav-settings').style.display='inline-block';
   }
   if(me.type==='admin'||me.type==='user'){
     document.getElementById('nav-stats').style.display='inline-block';
@@ -1414,6 +1522,7 @@ function showPage(name){
   if(name==='stats')loadStats();
   if(name==='observers')loadObservers();
   if(name==='account'){const w=document.getElementById('wm-toggle');if(w)w.checked=localStorage.getItem('vermeer_wm')==='1';}
+  if(name==='settings'){if(!me||me.type!=='admin'){showPage('albums');return;}loadAppSettings().then(fillGallerySettingsForm);}
 }
 
 
@@ -2384,8 +2493,9 @@ function openLightbox(idx){
 // Anzeige-Limits der Lightbox (längste Kante in CSS-Pixeln, Aspect Ratio
 // bleibt immer erhalten). Video-Limit wird zusätzlich im Inline-Style des
 // <video id="lb-video">-Elements gespiegelt (800px).
-const LB_MAX_PHOTO_PX=1200;
-const LB_MAX_VIDEO_PX=800;
+// Ab 1.11.0 admin-konfigurierbar (Galerie-Einstellungen); Fallback = alte Konstanten.
+function LB_PHOTO_PX(){return appSettings.lbMaxPhotoPx||1200;}
+function LB_VIDEO_PX(){return appSettings.lbMaxVideoPx||800;}
 function renderLightbox(){
   const p=lbPhotos[lbIndex];if(!p)return;
   // View exakt einmal pro Öffnung zählen (Server dedupliziert zusätzlich 10 Min)
@@ -2409,8 +2519,8 @@ function renderLightbox(){
     vid.style.display='block';
     // Längste Kante auf LB_MAX_VIDEO_PX begrenzen; das <video>-Element
     // erhält das Aspect Ratio innerhalb der max-Grenzen selbst
-    vid.style.maxWidth=`min(100%,${LB_MAX_VIDEO_PX}px)`;
-    vid.style.maxHeight=`min(calc(100vh - 100px),${LB_MAX_VIDEO_PX}px)`;
+    vid.style.maxWidth=`min(100%,${LB_VIDEO_PX()}px)`;
+    vid.style.maxHeight=`min(calc(100vh - 100px),${LB_VIDEO_PX()}px)`;
     if(vid._url){URL.revokeObjectURL(vid._url);vid._url=null;}
     if(p.streamable){
       // Echtes Streaming: Browser holt sich Byte-Ranges selbst (sofortiger Start, Spulen)
@@ -2441,8 +2551,8 @@ function renderLightbox(){
     tmpImg.onload=()=>{
       // Size canvas to fit viewport, aber maximal LB_MAX_PHOTO_PX auf der
       // längsten Kante (Aspect Ratio bleibt durch den min-Scale erhalten)
-      const maxW=Math.min(window.innerWidth,LB_MAX_PHOTO_PX);
-      const maxH=Math.min(window.innerHeight-90,LB_MAX_PHOTO_PX);   // Filmstreifen unten
+      const maxW=Math.min(window.innerWidth,LB_PHOTO_PX());
+      const maxH=Math.min(window.innerHeight-90,LB_PHOTO_PX());   // Filmstreifen unten
       const scale=Math.min(maxW/tmpImg.width,maxH/tmpImg.height);   // auch hochskalieren (bis max. Limit)
       canvas.width=tmpImg.width*scale;
       canvas.height=tmpImg.height*scale;
@@ -2772,7 +2882,7 @@ function fmtDate(ts){return new Date(ts).toLocaleDateString(lang==='de'?'de-DE':
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate(-Math.PI / 6);
     if(localStorage.getItem('vermeer_wm')!=='1')return;   // Wasserzeichen standardmäßig aus
-    const text = `Vermeer · ${username}`;
+    const text = `${appSettings.galleryName||'Vermeer'} · ${username}`;
     const cols = Math.ceil(canvas.width  / 300) + 2;
     const rows = Math.ceil(canvas.height / 150) + 2;
     for (let r = -rows; r <= rows; r++) {
@@ -2802,6 +2912,7 @@ function fmtDate(ts){return new Date(ts).toLocaleDateString(lang==='de'?'de-DE':
 })();
 
 applyTranslations();
+loadAppSettings();   // Galeriename/Größen (1.11.0) – parallel zur Session-Prüfung
 checkSession();
 </script>
 </body>

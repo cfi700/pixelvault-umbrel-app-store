@@ -20,7 +20,34 @@ const FileStore = require('session-file-store')(session);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = '1.10.3';
+const APP_VERSION = '1.11.0';
+
+// ─── Galerie-Einstellungen (Admin, ab 1.11.0) ─────────────────────
+// Persistiert in db.json unter `settings`. Alle Werte sind reine
+// Darstellungs-/Verarbeitungsparameter (keine Krypto-Relevanz).
+const SETTINGS_DEFAULTS = Object.freeze({
+  galleryName: 'Vermeer',   // Anzeigename (Login, Navbar, Titel, Wasserzeichen)
+  lbMaxPhotoPx: 1200,       // Lightbox: längste Kante Fotos
+  lbMaxVideoPx: 800,        // Lightbox: längste Kante Videos
+  thumbSize: 400            // Kachel-Thumbnails/Video-Poster (gilt nur für NEUE Uploads)
+});
+const GALLERY_NAME_RE = /^[^<>]{1,40}$/;   // kein HTML, max 40 Zeichen
+function clampInt(v, min, max, dflt) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(max, Math.max(min, n));
+}
+function sanitizeSettings(raw) {
+  const s = raw && typeof raw === 'object' ? raw : {};
+  const name = (typeof s.galleryName === 'string' ? s.galleryName.trim() : '');
+  return {
+    galleryName: GALLERY_NAME_RE.test(name) ? name : SETTINGS_DEFAULTS.galleryName,
+    lbMaxPhotoPx: clampInt(s.lbMaxPhotoPx, 400, 4000, SETTINGS_DEFAULTS.lbMaxPhotoPx),
+    lbMaxVideoPx: clampInt(s.lbMaxVideoPx, 400, 4000, SETTINGS_DEFAULTS.lbMaxVideoPx),
+    thumbSize:    clampInt(s.thumbSize,    200, 800,  SETTINGS_DEFAULTS.thumbSize)
+  };
+}
+function getSettings(db) { return sanitizeSettings(db.settings); }
 
 const DATA_DIR     = process.env.DATA_DIR || '/data';
 const PHOTOS_DIR   = path.join(DATA_DIR, 'photos');
@@ -63,10 +90,11 @@ const os = require('os');
 // Extract a 400x400 poster frame from a plaintext video buffer via ffmpeg.
 // Uses a short-lived temp file (ffmpeg needs seekable input for mp4/mov);
 // the file is removed immediately afterwards.
-function extractVideoPoster(plainBuf) {
+function extractVideoPoster(plainBuf, size) {
+  const px = clampInt(size, 200, 800, SETTINGS_DEFAULTS.thumbSize);
   const tmpIn = path.join(os.tmpdir(), `vmr-${crypto.randomBytes(6).toString('hex')}.vid`);
   const tmpOut = tmpIn + '.jpg';
-  const vf = 'scale=400:400:force_original_aspect_ratio=increase,crop=400:400';
+  const vf = `scale=${px}:${px}:force_original_aspect_ratio=increase,crop=${px}:${px}`;
   try {
     fs.writeFileSync(tmpIn, plainBuf);
     let r = spawnSync('ffmpeg', ['-y', '-ss', '1', '-i', tmpIn, '-frames:v', '1', '-vf', vf, '-q:v', '4', tmpOut], { timeout: 20000 });
@@ -147,6 +175,7 @@ function loadDB() {
   if (!db.albums) db.albums = [];
   if (!db.photos) db.photos = [];
   if (!db.observerLoginLog) db.observerLoginLog = [];
+  db.settings = sanitizeSettings(db.settings);   // Defaults ergänzen / Werte begrenzen (1.11.0)
   db.photos.forEach(p => { if (!Array.isArray(p.linkedAlbumIds)) p.linkedAlbumIds = []; });
   db.users.forEach(u => {
     if (!u.canViewAlbums) u.canViewAlbums = [];
@@ -357,7 +386,7 @@ function migrateUserPhotos(userId, dek, familyDek) {
           delete p.iv; delete p.tag;
         }
         if (!p.thumbIv) {
-          const poster = extractVideoPoster(plain);
+          const poster = extractVideoPoster(plain, getSettings(db).thumbSize);
           if (poster) {
             const e2 = encryptGCM(poster, target.key);
             fs.writeFileSync(thumbPath, e2.data);
@@ -898,7 +927,7 @@ async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
     fs.writeFileSync(path.join(PHOTOS_DIR, `${photoId}.enc`), ec.data);
     rec.encFormat = 'chunked'; rec.chunkSize = CHUNK_SIZE;
     rec.chunkCount = ec.chunkCount; rec.plainSize = ec.plainSize;
-    const poster = extractVideoPoster(file.buffer);
+    const poster = extractVideoPoster(file.buffer, getSettings(db).thumbSize);
     if (poster) {
       const e2 = encryptGCM(poster, key);
       fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
@@ -908,7 +937,8 @@ async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
     const e1 = encryptGCM(file.buffer, key);
     fs.writeFileSync(path.join(PHOTOS_DIR, `${photoId}.enc`), e1.data);
     rec.iv = e1.iv; rec.tag = e1.tag;
-    const thumbBuffer = await sharp(file.buffer).resize(400, 400, { fit: 'cover', position: 'centre' }).jpeg({ quality: 75 }).toBuffer();
+    const ts = getSettings(db).thumbSize;
+    const thumbBuffer = await sharp(file.buffer).resize(ts, ts, { fit: 'cover', position: 'centre' }).jpeg({ quality: 75 }).toBuffer();
     const e2 = encryptGCM(thumbBuffer, key);
     fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
     rec.thumbIv = e2.iv; rec.thumbTag = e2.tag;
@@ -1498,6 +1528,31 @@ app.post('/api/stats/reset', requireMainUser, (req, res) => {
   });
   saveDB(db);
   res.json({ success: true, photos, albums, scope });
+});
+
+// ─── Galerie-Einstellungen (1.11.0) ───────────────────────────────
+// GET ist bewusst ohne Auth: enthält nur unkritische Darstellungswerte
+// (Galeriename wird bereits auf dem Login-Screen angezeigt).
+app.get('/api/settings', (req, res) => {
+  const db = loadDB();
+  res.json(getSettings(db));
+});
+app.put('/api/settings', requireAdmin, (req, res) => {
+  const { galleryName, lbMaxPhotoPx, lbMaxVideoPx, thumbSize } = req.body || {};
+  if (galleryName !== undefined) {
+    const name = String(galleryName).trim();
+    if (!GALLERY_NAME_RE.test(name)) return res.status(400).json({ error: 'Invalid gallery name (1-40 chars, no < >)' });
+  }
+  const db = loadDB();
+  const current = getSettings(db);
+  db.settings = sanitizeSettings({
+    galleryName:  galleryName  !== undefined ? galleryName  : current.galleryName,
+    lbMaxPhotoPx: lbMaxPhotoPx !== undefined ? lbMaxPhotoPx : current.lbMaxPhotoPx,
+    lbMaxVideoPx: lbMaxVideoPx !== undefined ? lbMaxVideoPx : current.lbMaxVideoPx,
+    thumbSize:    thumbSize    !== undefined ? thumbSize    : current.thumbSize
+  });
+  saveDB(db);
+  res.json(db.settings);
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: APP_VERSION }));

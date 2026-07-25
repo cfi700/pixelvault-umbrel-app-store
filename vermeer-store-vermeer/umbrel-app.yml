@@ -2,7 +2,7 @@ manifestVersion: 1
 id: vermeer-store-vermeer
 category: files
 name: Vermeer
-version: "1.10.3"
+version: "1.11.0"
 tagline: Encrypted photo albums – private by design
 description: >-
   Vermeer stores your photos AES-256 encrypted on your Umbrel.
@@ -24,17 +24,13 @@ description: >-
   Default login: admin / admin (change immediately!)
 
 releaseNotes: >-
-  1.10.3 – Bugfix video playback controls: tapping a video in the
-  lightbox closed it instead of showing the native controls, making
-  seeking impossible. The transparent save-protection overlay covered
-  the video and swallowed all clicks/touches; it is now hidden in
-  video mode (right-click stays blocked via the global handler,
-  controlsList="nodownload" stays active) and re-enabled for photos.
-  Swipe navigation no longer fires when touching the video (timeline
-  scrubbing works), and arrow keys are left to the video for seeking
-  while a video is shown.
-  Includes 1.10.2 (observer link badge removed) and 1.10.1 (Android
-  back button forward-trap).
+  1.11.0 – New admin-only Gallery Settings page: rename the gallery
+  (login screen, navigation, page title and watermark), configure the
+  maximum lightbox display size for photos and videos (400-4000 px),
+  and set the thumbnail/poster size for new uploads (200-800 px).
+  Settings are stored server-side and validated/clamped on the server;
+  the gallery name is limited to 40 characters without HTML. Existing
+  thumbnails keep their size; originals are never affected.
 
 developer: Vermeer
 website: https://github.com/cfi700/vermeer-umbrel-app-store
