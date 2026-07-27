@@ -2,36 +2,68 @@ manifestVersion: 1
 id: vermeer-store-vermeer
 category: files
 name: Vermeer
-version: "1.11.0"
-tagline: Encrypted photo albums – private by design
+version: "2.0.0"
+tagline: Encrypted photo and video albums – private by design
 description: >-
-  Vermeer stores your photos AES-256 encrypted on your Umbrel.
-  All images are encrypted server-side – neither originals nor
-  thumbnails are stored in plain text on disk.
+  Vermeer keeps your photos and videos AES-256 encrypted on your own Umbrel.
+  Every file is encrypted server-side – neither originals, nor thumbnails,
+  nor video poster frames are stored in plain text on disk. Your password
+  derives your personal key; the keys themselves never touch the disk
+  unencrypted.
+
 
   Features:
 
-  - AES-256-CBC encryption for all photos and thumbnails
 
-  - Album and sub-album structure with unlimited depth
+  - AES-256-GCM encryption for photos, videos, thumbnails and poster frames
 
-  - User management with per-album access control
+  - Real video streaming from encrypted storage (MP4 / WebM / MOV, chunked format)
 
-  - Download protection: only the owner can download originals
+  - Chunked upload for large files – works behind 100 MB body limits (e.g. Cloudflare Tunnel)
+
+  - Albums and sub-albums with unlimited depth, plus linking one photo into several albums
+
+  - Hidden albums protected by a 4-digit PIN
+
+  - Three roles: admin, main users, and read-only observers with per-album access
+
+  - Personal recovery code for main users
+
+  - Statistics per user (views, viewers, observer logins), protected by password re-auth
+
+  - Configurable gallery: name, login taglines, colours, thumbnail and lightbox sizes
+
+  - Owner-only ZIP export as backup; no single-file downloads
 
   - DE / EN language toggle
 
-  Default login: admin / admin (change immediately!)
 
+  First login: admin / admin – change the password immediately.
 releaseNotes: >-
-  1.11.0 – New admin-only Gallery Settings page: rename the gallery
-  (login screen, navigation, page title and watermark), configure the
-  maximum lightbox display size for photos and videos (400-4000 px),
-  and set the thumbnail/poster size for new uploads (200-800 px).
-  Settings are stored server-side and validated/clamped on the server;
-  the gallery name is limited to 40 characters without HTML. Existing
-  thumbnails keep their size; originals are never affected.
+  2.0.0 – Major release. Vermeer now handles videos as a first-class citizen:
+  MP4, WebM and MOV files are stored in a chunked AES-256-GCM format and played
+  back by real HTTP range streaming, so seeking works and memory usage stays
+  low. Encrypted poster frames are generated automatically, and videos can be
+  used as album covers.
 
+
+  Large uploads no longer depend on the reverse proxy: files are split
+  client-side and reassembled on the server, which keeps uploads working behind
+  100 MB request limits such as Cloudflare Tunnel.
+
+
+  A single photo can now appear in several albums at once without being
+  duplicated, and admins get a new Gallery Settings page: gallery name, login
+  taglines per language, eight interface colours, thumbnail size and lightbox
+  maximum sizes – applied instantly, no restart needed.
+
+
+  Plus many refinements: reliable back-button behaviour on Android, working
+  native video controls in the lightbox, horizontally scrollable statistics on
+  phones, and server-side view counting for videos.
+
+
+  Updating from 1.x keeps all data, albums and users.
 developer: Vermeer
 website: https://github.com/cfi700/vermeer-umbrel-app-store
 dependencies: []

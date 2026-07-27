@@ -285,10 +285,14 @@
   .stats-section-header{padding:12px 16px;background:var(--surface2);border-bottom:1px solid var(--border);
     font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--muted);
     display:flex;align-items:center;gap:8px}
+  /* Scroll-Container: auf schmalen Displays (Smartphone Hochformat) werden die
+     Tabellen horizontal scrollbar statt Spalten abzuschneiden (1.12.1) */
+  .stats-table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
   .stats-table{width:100%;border-collapse:collapse}
   .stats-table th{padding:9px 14px;text-align:left;font-size:11px;text-transform:uppercase;
-    letter-spacing:.8px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border)}
-  .stats-table td{padding:9px 14px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle}
+    letter-spacing:.8px;color:var(--muted);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap}
+  .stats-table td{padding:9px 14px;font-size:13px;border-bottom:1px solid var(--border);vertical-align:middle;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
   .stats-table tr:last-child td{border-bottom:none}
   .stats-table tr:hover td{background:rgba(255,255,255,.015)}
   .rank-badge{display:inline-flex;align-items:center;justify-content:center;
@@ -544,6 +548,7 @@
   <div class="page" id="page-observers">
     <div class="page-header">
       <h2 class="page-title" data-i18n="obs.title"></h2>
+      <button class="btn btn-ghost btn-sm" id="btn-link-user" onclick="openLinkUserModal()" data-i18n="link.new" style="display:none"></button>
       <button class="btn btn-primary btn-sm" onclick="openNewObserverModal()" data-i18n="obs.new"></button>
     </div>
     <p style="color:var(--muted);font-size:13px;margin-bottom:14px" data-i18n="obs.desc"></p>
@@ -583,6 +588,19 @@
         <p style="color:var(--muted);font-size:12px;margin-top:8px" data-i18n="settings.watermark_hint"></p>
       </div>
     </div>
+    <!-- Beobachter-Verknüpfungen (nur Admin, 2.0.0) -->
+    <div class="card" style="max-width:440px;display:none" id="links-card">
+      <div class="card-header" data-i18n="link.card"></div>
+      <div style="padding:20px">
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px" data-i18n="link.card_desc"></p>
+        <div id="links-list" style="margin-bottom:16px"></div>
+        <div class="form-group">
+          <label data-i18n="link.code_label"></label>
+          <input type="text" id="link-code" placeholder="xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx-xxxx" autocomplete="off">
+        </div>
+        <button class="btn btn-primary" onclick="confirmLinkCode()" data-i18n="link.confirm_btn"></button>
+      </div>
+    </div>
     <div class="card" style="max-width:440px" id="export-card">
       <div class="card-header">Export</div>
       <div style="padding:20px">
@@ -615,6 +633,23 @@
           <input type="text" id="gset-name" maxlength="40">
           <p style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="gset.name_hint"></p>
         </div>
+        <div class="form-group">
+          <label data-i18n="gset.tagline_de"></label>
+          <input type="text" id="gset-tagline-de" maxlength="80">
+        </div>
+        <div class="form-group">
+          <label data-i18n="gset.tagline_en"></label>
+          <input type="text" id="gset-tagline-en" maxlength="80">
+        </div>
+        <p style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="gset.tagline_hint"></p>
+      </div>
+    </div>
+    <div class="card" style="max-width:520px">
+      <div class="card-header" data-i18n="gset.colors"></div>
+      <div style="padding:20px">
+        <div id="gset-colors" style="display:grid;grid-template-columns:1fr 1fr;gap:12px 20px"></div>
+        <p style="color:var(--muted);font-size:12px;margin-top:12px" data-i18n="gset.colors_hint"></p>
+        <button class="btn btn-ghost btn-sm" style="margin-top:10px" onclick="resetGalleryColors()" data-i18n="gset.colors_reset"></button>
       </div>
     </div>
     <div class="card" style="max-width:520px">
@@ -791,6 +826,33 @@
   </div>
 </div>
 
+<!-- MODAL: Admin als Beobachter verknüpfen (2.0.0) -->
+<div class="modal-backdrop" id="modal-link-admin">
+  <div class="modal">
+    <h2 data-i18n="link.new_title"></h2>
+    <div class="form-group"><label data-i18n="link.select"></label><select id="link-target"></select></div>
+    <div class="info-box" data-i18n="link.new_info"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal('modal-link-admin')" data-i18n="btn.cancel"></button>
+      <button class="btn btn-primary" onclick="createUserLink()" data-i18n="link.create_btn"></button>
+    </div>
+  </div>
+</div>
+
+<!-- MODAL: Einmal-Code anzeigen -->
+<div class="modal-backdrop" id="modal-link-code">
+  <div class="modal">
+    <h2 data-i18n="link.code_title"></h2>
+    <p style="color:var(--muted);font-size:13px;margin-bottom:14px" data-i18n="link.code_desc"></p>
+    <div id="link-code-out" style="font-family:monospace;font-size:15px;letter-spacing:1px;word-break:break-all;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px;color:var(--accent);text-align:center"></div>
+    <div class="info-box" style="margin-top:14px" data-i18n="link.code_warn"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="copyLinkCode()" data-i18n="link.copy"></button>
+      <button class="btn btn-primary" onclick="closeModal('modal-link-code')" data-i18n="btn.close"></button>
+    </div>
+  </div>
+</div>
+
 <!-- MODAL: Observer album access -->
 <div class="modal-backdrop" id="modal-obs-albums">
   <div class="modal modal-lg">
@@ -887,6 +949,14 @@ const T = {
     'nav.albums':'Alben','nav.users':'Benutzer','nav.account':'Konto','nav.settings':'Einstellungen',
     'gset.title':'Galerie-Einstellungen','gset.branding':'Galerie',
     'gset.name':'Galeriename','gset.name_hint':'Wird auf dem Login-Screen, in der Navigation, im Seitentitel und im Wasserzeichen angezeigt (max. 40 Zeichen).',
+    'gset.tagline_de':'Untertitel (Deutsch)','gset.tagline_en':'Untertitel (Englisch)',
+    'gset.tagline_hint':'Der Text unter dem Galerienamen auf dem Login-Screen (max. 80 Zeichen). Leer lassen = Standardtext.',
+    'gset.colors':'Farben',
+    'gset.color_accent':'Akzent','gset.color_accent2':'Akzent (hell)',
+    'gset.color_bg':'Hintergrund','gset.color_surface':'Fläche','gset.color_surface2':'Fläche (hell)',
+    'gset.color_border':'Rahmen','gset.color_text':'Text','gset.color_muted':'Text (gedämpft)',
+    'gset.colors_hint':'Die Farben gelten für alle Benutzer und wirken sofort nach dem Speichern (auf anderen Geräten nach dem nächsten Laden).',
+    'gset.colors_reset':'Farben zurücksetzen',
     'gset.display':'Darstellung (Lightbox)',
     'gset.photo_px':'Fotos: max. Kantenlänge in Pixel (400–4000)',
     'gset.video_px':'Videos: max. Kantenlänge in Pixel (400–4000)',
@@ -942,7 +1012,7 @@ const T = {
     'modal.albumperm.desc':'Alben, die','modal.albumperm.desc2':'sehen darf:',
     'modal.resetpw.title':'Passwort zurücksetzen','modal.resetpw.desc':'Neues Passwort für',
     'role.user':'Benutzer','role.admin':'Administrator',
-    'btn.cancel':'Abbrechen','btn.create':'Erstellen','btn.save':'Speichern','btn.set':'Setzen',
+    'btn.cancel':'Abbrechen','btn.create':'Erstellen','btn.save':'Speichern','btn.set':'Setzen','btn.close':'Schließen',
     'perm.saved':'Rechte gespeichert','perm.save_err':'Fehler beim Speichern','pw.set':'Passwort gesetzt',
     'err.required':'Benutzername und Passwort erforderlich',
     'loading':'Lade…','error':'Fehler beim Laden',
@@ -1016,6 +1086,22 @@ const T = {
     'obs.confirm_delete':'Beobachter wirklich löschen?',
     'obs.albums_count':(n)=>`${n} Album${n!==1?'en':''}`,
     'obs.pending_note':(n)=>n>0?` (${n} Foto(s) werden umgeschlüsselt)`:'',
+    'link.new':'👥 Benutzer verknüpfen','link.new_title':'Bestehenden Benutzer als Beobachter verknüpfen',
+    'link.select':'Benutzer ohne Adminrechte',
+    'link.new_info':'Der Benutzer behält sein eigenes Konto, seine Alben und sein Passwort und kann deine freigegebenen Alben zusätzlich ansehen – ohne zweites Beobachterkonto. Er erhält dabei deinen Familienschlüssel und sieht damit die Alben, die du über diesen Schlüssel teilst; deine rein privaten Alben bleiben verschlossen.',
+    'link.create_btn':'Code erzeugen',
+    'link.code_title':'Verknüpfungscode','link.code_desc':'Gib diesen Code an den Benutzer weiter. Er löst ihn bei sich unter „Konto" ein.',
+    'link.code_warn':'⚠ Der Code wird nur einmal angezeigt und ist 7 Tage gültig. Danach kannst du einen neuen erzeugen.',
+    'link.copy':'Kopieren','link.pending':'wartet auf Bestätigung','link.active':'verknüpft',
+    'link.expires':(d)=>`Code gültig bis ${d}`,'link.newcode':'Neuer Code','link.revoke':'Entziehen',
+    'link.confirm_revoke':'Verknüpfung wirklich entziehen? Der Benutzer verliert den Zugriff sofort.',
+    'link.revoked':'Verknüpfung entzogen',
+    'link.no_candidates':'Kein Benutzerkonto ohne Adminrechte vorhanden.',
+    'link.card':'Beobachter-Verknüpfungen','link.card_desc':'Ein Administrator kann dich als Beobachter seiner Alben verknüpfen. Löse dazu den Code ein, den du von ihm bekommst.',
+    'link.code_label':'Verknüpfungscode','link.confirm_btn':'Verknüpfung bestätigen',
+    'link.code_missing':'Bitte Code eingeben','link.confirmed':(n)=>`Verknüpft mit ${n}`,
+    'link.awaiting_code':'wartet auf deinen Code','link.none':'Noch keine Verknüpfungen.',
+    'link.leave':'Aufgeben','link.confirm_leave':'Verknüpfung wirklich aufgeben?','link.left':'Verknüpfung aufgegeben',
     'pin.unlock_title':'Verstecktes Album entsperren','pin.unlock_btn':'Entsperren',
     'pin.wrong':'Falscher PIN','pin.unlocked':'Album entsperrt',
     'hide.title':'Album verstecken','hide.unhide_title':'Album sichtbar machen',
@@ -1039,6 +1125,14 @@ const T = {
     'nav.albums':'Albums','nav.users':'Users','nav.account':'Account','nav.settings':'Settings',
     'gset.title':'Gallery Settings','gset.branding':'Gallery',
     'gset.name':'Gallery name','gset.name_hint':'Shown on the login screen, in the navigation, in the page title and in the watermark (max. 40 characters).',
+    'gset.tagline_de':'Tagline (German)','gset.tagline_en':'Tagline (English)',
+    'gset.tagline_hint':'The text below the gallery name on the login screen (max. 80 characters). Leave empty for the default text.',
+    'gset.colors':'Colors',
+    'gset.color_accent':'Accent','gset.color_accent2':'Accent (light)',
+    'gset.color_bg':'Background','gset.color_surface':'Surface','gset.color_surface2':'Surface (light)',
+    'gset.color_border':'Border','gset.color_text':'Text','gset.color_muted':'Text (muted)',
+    'gset.colors_hint':'Colors apply to all users and take effect immediately after saving (on other devices after the next reload).',
+    'gset.colors_reset':'Reset colors',
     'gset.display':'Display (lightbox)',
     'gset.photo_px':'Photos: max. edge length in pixels (400–4000)',
     'gset.video_px':'Videos: max. edge length in pixels (400–4000)',
@@ -1094,7 +1188,7 @@ const T = {
     'modal.albumperm.desc':'Albums that','modal.albumperm.desc2':'may view:',
     'modal.resetpw.title':'Reset Password','modal.resetpw.desc':'New password for',
     'role.user':'User','role.admin':'Administrator',
-    'btn.cancel':'Cancel','btn.create':'Create','btn.save':'Save','btn.set':'Set',
+    'btn.cancel':'Cancel','btn.create':'Create','btn.save':'Save','btn.set':'Set','btn.close':'Close',
     'perm.saved':'Permissions saved','perm.save_err':'Error saving','pw.set':'Password set',
     'err.required':'Username and password are required',
     'loading':'Loading…','error':'Failed to load',
@@ -1168,6 +1262,22 @@ const T = {
     'obs.confirm_delete':'Really delete this observer?',
     'obs.albums_count':(n)=>`${n} album${n!==1?'s':''}`,
     'obs.pending_note':(n)=>n>0?` (${n} photo(s) being re-encrypted)`:'',
+    'link.new':'👥 Link User','link.new_title':'Link Existing User as Observer',
+    'link.select':'User without admin rights',
+    'link.new_info':'The user keeps their own account, albums and password and can additionally view the albums you grant – no second observer account needed. They receive your family key and thus see the albums you share through it; your strictly private albums stay locked.',
+    'link.create_btn':'Generate Code',
+    'link.code_title':'Link Code','link.code_desc':'Pass this code to the user. They redeem it under "Account".',
+    'link.code_warn':'⚠ The code is shown once and is valid for 7 days. After that you can generate a new one.',
+    'link.copy':'Copy','link.pending':'awaiting confirmation','link.active':'linked',
+    'link.expires':(d)=>`Code valid until ${d}`,'link.newcode':'New Code','link.revoke':'Revoke',
+    'link.confirm_revoke':'Really revoke this link? The user loses access immediately.',
+    'link.revoked':'Link revoked',
+    'link.no_candidates':'No user account without admin rights available.',
+    'link.card':'Observer Links','link.card_desc':'An administrator can link you as an observer of their albums. Redeem the code they give you here.',
+    'link.code_label':'Link code','link.confirm_btn':'Confirm Link',
+    'link.code_missing':'Please enter a code','link.confirmed':(n)=>`Linked with ${n}`,
+    'link.awaiting_code':'awaiting your code','link.none':'No links yet.',
+    'link.leave':'Leave','link.confirm_leave':'Really give up this link?','link.left':'Link given up',
     'pin.unlock_title':'Unlock Hidden Album','pin.unlock_btn':'Unlock',
     'pin.wrong':'Wrong PIN','pin.unlocked':'Album unlocked',
     'hide.title':'Hide Album','hide.unhide_title':'Unhide Album',
@@ -1197,6 +1307,9 @@ function applyTranslations(){
   document.querySelectorAll('[data-i18n-ph]').forEach(el=>{el.placeholder=t(el.getAttribute('data-i18n-ph'));});
   document.querySelectorAll('option[data-i18n]').forEach(el=>{el.textContent=t(el.getAttribute('data-i18n'));});
   if(me)updateLoggedInLabel();
+  // Konfigurierte Login-Tagline hat Vorrang vor dem i18n-Standardtext (1.12.0);
+  // Guard, weil applyTranslations vor der Settings-Initialisierung laufen kann.
+  if(typeof appSettings!=='undefined'&&typeof applyGalleryTagline==='function')applyGalleryTagline();
 }
 function updateLoggedInLabel(){const el=document.getElementById('logged-in-label');if(el)el.innerHTML=`<span style="color:var(--muted)">${t('nav.loggedinas')} <strong style="color:var(--accent)">${esc(me.username)}</strong></span>`;}
 
@@ -1272,8 +1385,10 @@ function showRecoveryCode(code){
   document.getElementById('modal-recovery-code').classList.add('open');
 }
 
-async function copyRecoveryCode(){
-  const el=document.getElementById('recovery-code-display');
+async function copyRecoveryCode(){ return copyCodeFrom('recovery-code-display'); }
+async function copyLinkCode(){ return copyCodeFrom('link-code-out'); }
+async function copyCodeFrom(elId){
+  const el=document.getElementById(elId);
   const code=el.textContent;
   let copied=false;
   // 1) Moderne API – nur in Secure Contexts (HTTPS/localhost) verfügbar
@@ -1332,12 +1447,32 @@ async function doLogout(){await fetch('/api/logout',{method:'POST'});location.re
 // ── Galerie-Einstellungen (1.11.0) ──────────────────────────────────
 // Server-Defaults gespiegelt; wird beim Start und nach dem Speichern
 // aktualisiert. LB-Größen werden in renderLightbox live gelesen.
-let appSettings={galleryName:'Vermeer',lbMaxPhotoPx:1200,lbMaxVideoPx:800,thumbSize:400};
+var appSettings={
+  galleryName:'Vermeer',
+  taglineDe:'Verschlüsselte Fotoverwaltung',taglineEn:'Encrypted Photo Management',
+  lbMaxPhotoPx:1200,lbMaxVideoPx:800,thumbSize:400,
+  colors:{accent:'#c8a96e',accent2:'#e8c98a',bg:'#0d0d0f',surface:'#151518',surface2:'#1c1c21',border:'#2a2a32',text:'#e8e6e0',muted:'#7a7872'}
+};
+const COLOR_DEFAULTS=Object.freeze({accent:'#c8a96e',accent2:'#e8c98a',bg:'#0d0d0f',surface:'#151518',surface2:'#1c1c21',border:'#2a2a32',text:'#e8e6e0',muted:'#7a7872'});
+const COLOR_KEYS=Object.keys(COLOR_DEFAULTS);   // Key == CSS-Variablenname (--accent, --bg, …)
+function applyGalleryTagline(){
+  const txt=(lang==='de'?appSettings.taglineDe:appSettings.taglineEn)||'';
+  document.querySelectorAll('[data-i18n="login.tagline"]').forEach(el=>{if(txt)el.textContent=txt;});
+}
+function applyGalleryColors(){
+  const c=appSettings.colors||{};
+  COLOR_KEYS.forEach(k=>{
+    const v=/^#[0-9a-fA-F]{6}$/.test(c[k]||'')?c[k]:COLOR_DEFAULTS[k];
+    document.documentElement.style.setProperty('--'+k,v);
+  });
+}
 function applyAppSettings(){
   const n=appSettings.galleryName||'Vermeer';
   document.title=n;
   const lt=document.getElementById('login-title');if(lt)lt.textContent=n;
   const bn=document.getElementById('brand-name');if(bn)bn.textContent=n;
+  applyGalleryTagline();
+  applyGalleryColors();
 }
 async function loadAppSettings(){
   try{
@@ -1348,18 +1483,37 @@ async function loadAppSettings(){
 }
 function fillGallerySettingsForm(){
   document.getElementById('gset-name').value=appSettings.galleryName;
+  document.getElementById('gset-tagline-de').value=appSettings.taglineDe;
+  document.getElementById('gset-tagline-en').value=appSettings.taglineEn;
   document.getElementById('gset-photo-px').value=appSettings.lbMaxPhotoPx;
   document.getElementById('gset-video-px').value=appSettings.lbMaxVideoPx;
   document.getElementById('gset-thumb-px').value=appSettings.thumbSize;
+  // Farb-Picker dynamisch aufbauen (Label aus i18n, Wert aus Settings)
+  const grid=document.getElementById('gset-colors');
+  grid.innerHTML=COLOR_KEYS.map(k=>`
+    <label style="display:flex;align-items:center;justify-content:space-between;gap:10px;font-size:13px;cursor:pointer">
+      <span>${esc(t('gset.color_'+k))}</span>
+      <input type="color" id="gset-color-${k}" value="${(appSettings.colors&&appSettings.colors[k])||COLOR_DEFAULTS[k]}"
+        style="width:44px;height:28px;padding:0;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer">
+    </label>`).join('');
   document.getElementById('gset-msg').textContent='';
+}
+function resetGalleryColors(){
+  COLOR_KEYS.forEach(k=>{const el=document.getElementById('gset-color-'+k);if(el)el.value=COLOR_DEFAULTS[k];});
+  document.getElementById('gset-msg').textContent='→ '+t('gset.save');
 }
 async function saveGallerySettings(){
   const msg=document.getElementById('gset-msg');msg.textContent='…';
+  const colors={};
+  COLOR_KEYS.forEach(k=>{const el=document.getElementById('gset-color-'+k);if(el)colors[k]=el.value;});
   const body={
     galleryName:document.getElementById('gset-name').value.trim(),
+    taglineDe:document.getElementById('gset-tagline-de').value.trim(),
+    taglineEn:document.getElementById('gset-tagline-en').value.trim(),
     lbMaxPhotoPx:parseInt(document.getElementById('gset-photo-px').value,10),
     lbMaxVideoPx:parseInt(document.getElementById('gset-video-px').value,10),
-    thumbSize:parseInt(document.getElementById('gset-thumb-px').value,10)
+    thumbSize:parseInt(document.getElementById('gset-thumb-px').value,10),
+    colors
   };
   try{
     const r=await api('PUT','/api/settings',body);
@@ -1504,6 +1658,10 @@ function bootApp(){
   if(me.type==='user'||me.type==='admin'){
     document.getElementById('nav-observers').style.display='inline-block';
   }
+  // Bestehende Benutzer verknüpfen darf nur ein Konto mit Adminrechten (2.0.0)
+  if(me.type==='admin'){
+    const lb=document.getElementById('btn-link-user');if(lb)lb.style.display='inline-block';
+  }
   if(me.type==='observer'){
     const ec=document.getElementById('export-card');if(ec)ec.style.display='none';
   }
@@ -1521,7 +1679,7 @@ function showPage(name){
   if(name==='users')loadUsers();
   if(name==='stats')loadStats();
   if(name==='observers')loadObservers();
-  if(name==='account'){const w=document.getElementById('wm-toggle');if(w)w.checked=localStorage.getItem('vermeer_wm')==='1';}
+  if(name==='account'){const w=document.getElementById('wm-toggle');if(w)w.checked=localStorage.getItem('vermeer_wm')==='1';loadMyLinks();}
   if(name==='settings'){if(!me||me.type!=='admin'){showPage('albums');return;}loadAppSettings().then(fillGallerySettingsForm);}
 }
 
@@ -1701,10 +1859,10 @@ function renderStatsTable(wrap, title, rows, headers, rowFn, valueFn) {
   }
   const maxV = valueFn ? Math.max(...rows.map(valueFn), 1) : 1;
   sec.innerHTML = `<div class="stats-section-header">${title}</div>
-    <table class="stats-table">
+    <div class="stats-table-scroll"><table class="stats-table">
       <thead><tr><th>#</th>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead>
       <tbody>${rows.map((row, i) => `<tr>${rowFn(row, i, maxV)}</tr>`).join('')}</tbody>
-    </table>`;
+    </table></div>`;
   wrap.appendChild(sec);
 }
 
@@ -1732,7 +1890,7 @@ document.addEventListener('click',e=>{
 });
 
 // ═══ PIN / HIDE / OBSERVERS / EXPORT (v1.0.0) ═══════════════════════
-let pinAlbum=null, hideAlbum=null, obsAlbumsTargetId=null, allObservers=[];
+let pinAlbum=null, hideAlbum=null, obsAlbumsTargetId=null, obsAlbumsIsLink=false, allObservers=[];
 
 function openPinModal(album){
   pinAlbum=album;
@@ -1795,12 +1953,15 @@ document.getElementById('observers-tbody').addEventListener('click',e=>{
   if(btn.dataset.act==='obsalbum')openObsAlbumsModal(id,obsNameById(id));
   else if(btn.dataset.act==='obsreset')openResetObserverPw(id);
   else if(btn.dataset.act==='obsdel')deleteObserver(id);
+  else if(btn.dataset.act==='linkalbum')openObsAlbumsModal(id,obsNameById(id),true);
+  else if(btn.dataset.act==='linkcode')createUserLink(id);
+  else if(btn.dataset.act==='linkdel')revokeUserLink(id);
 });
 async function loadObservers(){
   const r=await fetch('/api/observers');
   if(!r.ok)return;
   allObservers=await r.json();
-  document.getElementById('observers-tbody').innerHTML=allObservers.map(o=>`
+  document.getElementById('observers-tbody').innerHTML=allObservers.map(o=>o.linked?linkedAdminRow(o):`
     <tr>
       <td><strong>👁 ${esc(o.username)}</strong>${o.mustChangePassword?' <span style="color:var(--muted);font-size:11px">(Setup ausstehend)</span>':''}</td>
       <td>${fmtDate(o.createdAt)}</td>
@@ -1812,6 +1973,23 @@ async function loadObservers(){
         <button class="btn btn-danger btn-sm" data-act="obsdel" data-id="${o.id}">${t('users.delete')}</button>
       </div></td>
     </tr>`).join('')||`<tr><td colspan="5" style="color:var(--muted);text-align:center">–</td></tr>`;
+}
+// Zeile für einen als Beobachter verknüpften Hauptbenutzer (2.0.0)
+function linkedAdminRow(o){
+  const pending=o.status!=='active';
+  return `
+    <tr>
+      <td><strong>👥 ${esc(o.username)}</strong>
+        <span style="font-size:11px;color:${pending?'var(--muted)':'var(--accent)'}">(${pending?t('link.pending'):t('link.active')})</span></td>
+      <td>${o.createdAt?fmtDate(o.createdAt):'–'}</td>
+      <td><span style="font-size:12px;color:var(--muted)">${t('obs.albums_count',(o.canViewAlbums||[]).length)}</span>
+        <button class="btn btn-ghost btn-xs" style="margin-left:8px" data-act="linkalbum" data-id="${o.id}">${t('users.album_rights')}</button></td>
+      <td style="font-size:12px;color:var(--muted)">${pending&&o.expiresAt?t('link.expires',fmtDate(o.expiresAt)):'–'}</td>
+      <td><div class="td-actions">
+        <button class="btn btn-ghost btn-sm" data-act="linkcode" data-id="${o.id}">${t('link.newcode')}</button>
+        <button class="btn btn-danger btn-sm" data-act="linkdel" data-id="${o.id}">${t('link.revoke')}</button>
+      </div></td>
+    </tr>`;
 }
 function openNewObserverModal(){['no-name','no-pass'].forEach(id=>document.getElementById(id).value='');document.getElementById('modal-new-observer').classList.add('open');}
 async function createObserver(){
@@ -1834,8 +2012,9 @@ async function openResetObserverPw(id){
   const r=await api('PUT',`/api/observers/${id}/password`,{password:pw});
   if(r.ok)toast(t('pw.set'),'success');else toast((await r.json()).error,'error');
 }
-function openObsAlbumsModal(obsId,name){
+function openObsAlbumsModal(obsId,name,isLink){
   obsAlbumsTargetId=obsId;
+  obsAlbumsIsLink=!!isLink;
   document.getElementById('obsalbums-name').textContent=name;
   const obs=allObservers.find(o=>o.id===obsId);
   const current=obs?.canViewAlbums||[];
@@ -1848,10 +2027,79 @@ function openObsAlbumsModal(obsId,name){
 }
 async function saveObserverAlbums(){
   const checked=[...document.querySelectorAll('#obs-album-tree input:checked')].map(x=>x.value);
-  const r=await api('PUT',`/api/observers/${obsAlbumsTargetId}/albums`,{canViewAlbums:checked});
+  const url=obsAlbumsIsLink?`/api/observers/link/${obsAlbumsTargetId}/albums`:`/api/observers/${obsAlbumsTargetId}/albums`;
+  const r=await api('PUT',url,{canViewAlbums:checked});
   const data=await r.json();
   if(r.ok){toast(t('perm.saved')+t('obs.pending_note',data.pendingCount||0),'success');closeModal('modal-obs-albums');loadObservers();}
   else toast(t('perm.save_err'),'error');
+}
+
+// ── Bestehenden Benutzer als Beobachter verknüpfen (2.0.0) ──
+// Nur Admins dürfen verknüpfen. Der Admin erzeugt einen Einmal-Code; der
+// Benutzer löst ihn in seiner eigenen Sitzung unter "Konto" ein. So wandert
+// der Familienschlüssel, ohne dass ein Passwort geteilt werden muss.
+async function openLinkUserModal(){
+  const r=await fetch('/api/observers/link-candidates');
+  if(!r.ok){toast(t('error'),'error');return;}
+  const cands=await r.json();
+  const sel=document.getElementById('link-target');
+  if(!cands.length){toast(t('link.no_candidates'),'error');return;}
+  sel.innerHTML=cands.map(c=>`<option value="${c.id}">${esc(c.username)}</option>`).join('');
+  document.getElementById('modal-link-admin').classList.add('open');
+}
+async function createUserLink(targetId){
+  const userId=typeof targetId==='string'?targetId:document.getElementById('link-target').value;
+  if(!userId)return;
+  const r=await api('POST','/api/observers/link',{userId});
+  const data=await r.json();
+  if(!r.ok){toast(data.error||t('error'),'error');return;}
+  closeModal('modal-link-admin');
+  document.getElementById('link-code-out').textContent=data.code;
+  document.getElementById('modal-link-code').classList.add('open');
+  loadObservers();
+}
+async function revokeUserLink(userId){
+  if(!confirm(t('link.confirm_revoke')))return;
+  const r=await fetch(`/api/observers/link/${userId}`,{method:'DELETE'});
+  if(r.ok){toast(t('link.revoked'),'success');loadObservers();}
+  else toast((await r.json()).error,'error');
+}
+
+// ── Sicht des verknüpften Benutzers (Konto-Seite) ──
+async function loadMyLinks(){
+  const card=document.getElementById('links-card');
+  if(!card)return;
+  if(!me||me.type==='observer'){card.style.display='none';return;}
+  card.style.display='';
+  const box=document.getElementById('links-list');
+  try{
+    const r=await fetch('/api/me/links');
+    if(!r.ok){box.innerHTML='';return;}
+    const d=await r.json();
+    const rows=[];
+    d.active.forEach(l=>rows.push(`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span><strong>${esc(l.ownerName)}</strong> <span style="font-size:12px;color:var(--muted)">${t('obs.albums_count',l.albumCount)}</span></span>
+      <button class="btn btn-ghost btn-xs" data-linkowner="${l.ownerId}">${t('link.leave')}</button></div>`));
+    d.pending.forEach(l=>rows.push(`<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px;color:var(--muted)">
+      <strong style="color:var(--text)">${esc(l.ownerName)}</strong> – ${t('link.awaiting_code')}</div>`));
+    box.innerHTML=rows.join('')||`<p style="color:var(--muted);font-size:13px;margin:0">${t('link.none')}</p>`;
+    box.querySelectorAll('[data-linkowner]').forEach(b=>b.addEventListener('click',()=>leaveLink(b.dataset.linkowner)));
+  }catch{box.innerHTML='';}
+}
+async function confirmLinkCode(){
+  const inp=document.getElementById('link-code');
+  const code=inp.value.trim();
+  if(!code){toast(t('link.code_missing'),'error');return;}
+  const r=await api('POST','/api/me/links/confirm',{code});
+  const d=await r.json();
+  if(r.ok){inp.value='';toast(t('link.confirmed',d.ownerName),'success');loadMyLinks();}
+  else toast(d.error||t('error'),'error');
+}
+async function leaveLink(ownerId){
+  if(!confirm(t('link.confirm_leave')))return;
+  const r=await fetch(`/api/me/links/${ownerId}`,{method:'DELETE'});
+  if(r.ok){toast(t('link.left'),'success');loadMyLinks();}
+  else toast((await r.json()).error,'error');
 }
 
 // ── Export ──

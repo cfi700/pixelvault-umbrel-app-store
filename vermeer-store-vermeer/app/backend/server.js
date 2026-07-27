@@ -20,18 +20,27 @@ const FileStore = require('session-file-store')(session);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = '1.11.0';
+const APP_VERSION = '2.0.0';
 
 // ─── Galerie-Einstellungen (Admin, ab 1.11.0) ─────────────────────
 // Persistiert in db.json unter `settings`. Alle Werte sind reine
 // Darstellungs-/Verarbeitungsparameter (keine Krypto-Relevanz).
 const SETTINGS_DEFAULTS = Object.freeze({
   galleryName: 'Vermeer',   // Anzeigename (Login, Navbar, Titel, Wasserzeichen)
+  taglineDe: 'Verschlüsselte Fotoverwaltung',   // Untertitel Login-Screen (DE)
+  taglineEn: 'Encrypted Photo Management',      // Untertitel Login-Screen (EN)
   lbMaxPhotoPx: 1200,       // Lightbox: längste Kante Fotos
   lbMaxVideoPx: 800,        // Lightbox: längste Kante Videos
-  thumbSize: 400            // Kachel-Thumbnails/Video-Poster (gilt nur für NEUE Uploads)
+  thumbSize: 400,           // Kachel-Thumbnails/Video-Poster (gilt nur für NEUE Uploads)
+  colors: Object.freeze({   // CSS-Variablen des Frontends (1.12.0)
+    accent:  '#c8a96e', accent2: '#e8c98a',
+    bg:      '#0d0d0f', surface: '#151518', surface2: '#1c1c21',
+    border:  '#2a2a32', text:    '#e8e6e0', muted:    '#7a7872'
+  })
 });
 const GALLERY_NAME_RE = /^[^<>]{1,40}$/;   // kein HTML, max 40 Zeichen
+const TAGLINE_RE = /^[^<>]{0,80}$/;        // kein HTML, max 80 Zeichen (leer = Default)
+const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 function clampInt(v, min, max, dflt) {
   const n = parseInt(v, 10);
   if (!Number.isFinite(n)) return dflt;
@@ -40,11 +49,22 @@ function clampInt(v, min, max, dflt) {
 function sanitizeSettings(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   const name = (typeof s.galleryName === 'string' ? s.galleryName.trim() : '');
+  const tagDe = (typeof s.taglineDe === 'string' ? s.taglineDe.trim() : '');
+  const tagEn = (typeof s.taglineEn === 'string' ? s.taglineEn.trim() : '');
+  const rawColors = s.colors && typeof s.colors === 'object' ? s.colors : {};
+  const colors = {};
+  for (const [k, dflt] of Object.entries(SETTINGS_DEFAULTS.colors)) {
+    const v = typeof rawColors[k] === 'string' ? rawColors[k].trim() : '';
+    colors[k] = HEX_COLOR_RE.test(v) ? v.toLowerCase() : dflt;
+  }
   return {
     galleryName: GALLERY_NAME_RE.test(name) ? name : SETTINGS_DEFAULTS.galleryName,
+    taglineDe: (tagDe && TAGLINE_RE.test(tagDe)) ? tagDe : SETTINGS_DEFAULTS.taglineDe,
+    taglineEn: (tagEn && TAGLINE_RE.test(tagEn)) ? tagEn : SETTINGS_DEFAULTS.taglineEn,
     lbMaxPhotoPx: clampInt(s.lbMaxPhotoPx, 400, 4000, SETTINGS_DEFAULTS.lbMaxPhotoPx),
     lbMaxVideoPx: clampInt(s.lbMaxVideoPx, 400, 4000, SETTINGS_DEFAULTS.lbMaxVideoPx),
-    thumbSize:    clampInt(s.thumbSize,    200, 800,  SETTINGS_DEFAULTS.thumbSize)
+    thumbSize:    clampInt(s.thumbSize,    200, 800,  SETTINGS_DEFAULTS.thumbSize),
+    colors
   };
 }
 function getSettings(db) { return sanitizeSettings(db.settings); }
@@ -156,7 +176,11 @@ function normalizeRecoveryCode(code) { return String(code || '').toLowerCase().r
 // In-memory key caches: sessionID → Buffer. Never on disk.
 const dekCache    = new Map();  // main user's personal DEK
 const familyCache = new Map();  // family/group DEK (owner + observers)
-setInterval(() => { if (dekCache.size > 2000) dekCache.clear(); if (familyCache.size > 2000) familyCache.clear(); }, 3600000);
+// Admin-Beobachter-Verknüpfung (2.0.0): sessionID → Map(ownerId → family DEK).
+// Ein Admin kann als Beobachter mehrerer Hauptbenutzer verknüpft sein und
+// braucht deshalb pro Besitzer einen eigenen Familienschlüssel im RAM.
+const linkedFamilyCache = new Map();
+setInterval(() => { if (dekCache.size > 2000) dekCache.clear(); if (familyCache.size > 2000) familyCache.clear(); if (linkedFamilyCache.size > 2000) linkedFamilyCache.clear(); }, 3600000);
 
 // ─── Database ─────────────────────────────────────────────────────
 const SHARED_ALBUM_ID = '__shared__';
@@ -199,6 +223,18 @@ function saveDB(db) {
 function uid() { return crypto.randomBytes(8).toString('hex'); }
 const ID_RE = /^[a-f0-9]{16}$/;   // uid() format – blocks path traversal / injection
 
+// Zentrale View-Zählung mit Owner-Ausnahme und 10-Min-Dedup pro Nutzer.
+// Wird von /view (Lightbox-Öffnung) UND als serverseitiges Sicherheitsnetz
+// von /stream bzw. /full (Videos) genutzt – das Dedup-Fenster verhindert
+// Doppelzählung, wenn beide Pfade beim selben Abspielen feuern (1.12.1).
+function countViewOnce(db, photo, userId) {
+  if (photo.ownerId === userId) return false;
+  const tenMinAgo = Date.now() - 600000;
+  if ((photo.viewLog || []).some(e => e.userId === userId && e.ts > tenMinAgo)) return false;
+  trackPhotoView(db, photo.id, userId);
+  return true;
+}
+
 function trackPhotoView(db, photoId, userId) {
   const photo = db.photos.find(p => p.id === photoId); if (!photo) return;
   photo.views = (photo.views || 0) + 1;
@@ -222,7 +258,8 @@ function visibleAlbumIds(db, userId) {
   if (user.type === 'admin') return db.albums.map(a => a.id);
   if (user.type === 'observer') return expandAlbumIds(db, user.canViewAlbums || []);
   const owned = db.albums.filter(a => a.ownerId === userId).map(a => a.id);
-  return expandAlbumIds(db, [...new Set([...owned, ...(user.canViewAlbums || [])])]);
+  // Verknüpfte Alben (2.0.0) erst ab bestätigter Verknüpfung – vorher fehlt der Schlüssel
+  return expandAlbumIds(db, [...new Set([...owned, ...(user.canViewAlbums || []), ...linkedAlbumIdsFor(user, true)])]);
 }
 function canViewAlbum(db, userId, albumId) {
   if (albumId === SHARED_ALBUM_ID) { const u = db.users.find(x => x.id === userId); return u && u.type !== 'observer'; }
@@ -267,10 +304,15 @@ function albumIsGranted(db, albumId) {
   const chain = ancestorChain(db, albumId);
   return db.users.some(u => u.type === 'user' && (u.canViewAlbums || []).some(id => chain.includes(id)));
 }
-// Granted to any OBSERVER → owner's family key
+// Granted to any OBSERVER → owner's family key.
+// Ab 2.0.0 zählt auch ein als Beobachter verknüpfter Hauptbenutzer
+// (familyLinks), damit die betroffenen Alben in den Familien-Kontext
+// umgeschlüsselt werden statt in den serverweiten 'shared'-Kontext.
 function albumIsFamilyGranted(db, albumId) {
   const chain = ancestorChain(db, albumId);
-  return db.users.some(u => u.type === 'observer' && (u.canViewAlbums || []).some(id => chain.includes(id)));
+  if (db.users.some(u => u.type === 'observer' && (u.canViewAlbums || []).some(id => chain.includes(id)))) return true;
+  return db.users.some(u => u.type === 'user' &&
+    familyLinksOf(u).some(l => !linkExpired(l) && (l.albumIds || []).some(id => chain.includes(id))));
 }
 // Hidden albums: inherit from ancestors
 function effectiveHidden(db, albumId) {
@@ -302,7 +344,56 @@ function familyKeyFor(db, ownerId, req) {
   const me = getUser(db, req);
   if (!me) return null;
   if (me.id === ownerId || (me.type === 'observer' && me.parentUserId === ownerId)) return familyCache.get(req.sessionID) || null;
+  // Hauptbenutzer, der als Beobachter dieses Besitzers verknüpft ist (2.0.0).
+  // Die Verknüpfung wird pro Zugriff nachgeprüft, damit ein Entzug sofort
+  // greift und nicht erst beim nächsten Login des Benutzers.
+  const linked = linkedFamilyCache.get(req.sessionID);
+  if (linked && linked.has(ownerId)) {
+    if (findFamilyLink(me, ownerId)?.status === 'active') return linked.get(ownerId);
+    linked.delete(ownerId);
+  }
   return null;
+}
+
+// ─── Beobachter-Verknüpfung bestehender Benutzer (2.0.0) ──────────
+// Ein Konto MIT ADMIN-RECHTEN kann bestehende Hauptbenutzer (ohne
+// Adminrechte) als Beobachter seiner eigenen Alben verknüpfen. Der
+// verknüpfte Benutzer behält sein Konto, seine Alben und seinen eigenen
+// Schlüssel und bekommt zusätzlich den Familienschlüssel des Admins –
+// verpackt unter seinem EIGENEN persönlichen DEK, damit kein Passwort
+// geteilt werden muss. Weil der Admin den DEK des anderen nicht kennt,
+// läuft die Übergabe über einen Einmal-Code:
+//   1. Admin verknüpft   → familyKey wird mit kdf(code) verpackt (status 'pending')
+//   2. Benutzer löst den Code in seiner Sitzung ein → Umpacken unter seinen DEK ('active')
+// Der Code läuft nach 7 Tagen ab; solange liegt der Familienschlüssel nur
+// passwortabgeleitet verpackt auf der Platte, nie im Klartext.
+const LINK_TTL_MS = 7 * 24 * 3600 * 1000;
+function familyLinksOf(user) { return Array.isArray(user?.familyLinks) ? user.familyLinks : []; }
+function findFamilyLink(user, ownerId) { return familyLinksOf(user).find(l => l.ownerId === ownerId); }
+function linkExpired(link) { return link.status === 'pending' && link.expiresAt && Date.now() > link.expiresAt; }
+// Alle Hauptbenutzer, die bei diesem Besitzer als Beobachter verknüpft (oder angefragt) sind
+function linkedUsersFor(db, ownerId) {
+  return db.users.filter(u => u.type === 'user' && familyLinksOf(u).some(l => l.ownerId === ownerId && !linkExpired(l)));
+}
+// Alben, die einem Benutzer über Verknüpfungen zustehen
+function linkedAlbumIdsFor(user, activeOnly) {
+  const ids = [];
+  familyLinksOf(user).forEach(l => {
+    if (linkExpired(l)) return;
+    if (activeOnly && l.status !== 'active') return;
+    (l.albumIds || []).forEach(id => ids.push(id));
+  });
+  return ids;
+}
+// Verknüpfte Familienschlüssel einer Sitzung aus dem persönlichen DEK auspacken
+function loadLinkedFamilies(user, dek, sessionID) {
+  const map = new Map();
+  familyLinksOf(user).forEach(l => {
+    if (l.status !== 'active' || !l.familyWrappedDEK) return;
+    try { map.set(l.ownerId, unwrapKey(l.familyWrappedDEK, dek)); } catch {}
+  });
+  if (map.size) linkedFamilyCache.set(sessionID, map); else linkedFamilyCache.delete(sessionID);
+  return map;
 }
 
 // ─── Photo read-key resolution ────────────────────────────────────
@@ -314,6 +405,9 @@ function resolveReadKey(db, photo, req) {
     if (fk) return { key: fk };
     const me = getUser(db, req);
     if (me && (me.id === photo.ownerId || (me.type === 'observer' && me.parentUserId === photo.ownerId)))
+      return { denied: true };
+    // Verknüpfter Hauptbenutzer (2.0.0): Recht vorhanden, Schlüssel fehlt nur in dieser Sitzung
+    if (me && findFamilyLink(me, photo.ownerId)?.status === 'active')
       return { denied: true };
     return { pending: true };
   }
@@ -514,6 +608,7 @@ app.post('/api/login', rateLimit(10, 900000), (req, res) => {
       dekCache.set(req.sessionID, dek);
       let fam = null;
       if (user.familyWrappedDEK) { try { fam = unwrapKey(user.familyWrappedDEK, dek); familyCache.set(req.sessionID, fam); } catch {} }
+      loadLinkedFamilies(user, dek, req.sessionID);   // Admin-Beobachter-Verknüpfungen (2.0.0)
       setImmediate(() => migrateUserPhotos(user.id, dek, fam));
       return res.json({ id: user.id, username: user.username, role: user.role, type: user.type });
     } catch { return res.status(500).json({ error: 'Key unwrap failed' }); }
@@ -535,7 +630,7 @@ app.post('/api/login', rateLimit(10, 900000), (req, res) => {
 });
 
 app.post('/api/logout', (req, res) => {
-  dekCache.delete(req.sessionID); familyCache.delete(req.sessionID);
+  dekCache.delete(req.sessionID); familyCache.delete(req.sessionID); linkedFamilyCache.delete(req.sessionID);
   req.session.destroy(() => res.json({ success: true }));
 });
 
@@ -577,6 +672,9 @@ app.post('/api/me/setup-password', requireAuth, (req, res) => {
     catch { return res.status(401).json({ error: 'Invalid recovery code' }); }
   }
   if (!dek) dek = crypto.randomBytes(32);
+  // Neuer DEK → unter dem alten DEK verpackte Verknüpfungen sind nicht mehr
+  // entpackbar; sie müssen von den Besitzern neu vergeben werden (2.0.0).
+  if (!restored && familyLinksOf(user).length) user.familyLinks = [];
 
   const kdfSalt = crypto.randomBytes(16).toString('hex');
   const newRecoveryCode = generateRecoveryCode();
@@ -681,6 +779,8 @@ app.delete('/api/users/:id', requireAdmin, (req, res) => {
   const removedId = db.users[idx].id;
   db.users.splice(idx, 1);
   db.users = db.users.filter(u => u.parentUserId !== removedId); // cascade observers
+  // Admin-Beobachter-Verknüpfungen auf den gelöschten Besitzer mit entfernen (2.0.0)
+  db.users.forEach(u => { if (Array.isArray(u.familyLinks)) u.familyLinks = u.familyLinks.filter(l => l.ownerId !== removedId); });
   saveDB(db); res.json({ success: true });
 });
 app.put('/api/users/:id/password', requireAdmin, (req, res) => {
@@ -715,8 +815,18 @@ app.put('/api/users/:id/album-permissions', requireAdmin, (req, res) => {
 // ═══ OBSERVERS (managed by main user) ═══════════════════════════
 app.get('/api/observers', requireMainUser, (req, res) => {
   const db = loadDB();
-  res.json(db.users.filter(u => u.type === 'observer' && u.parentUserId === req.session.userId)
-    .map(u => ({ id: u.id, username: u.username, createdAt: u.createdAt, canViewAlbums: u.canViewAlbums || [], mustChangePassword: !!u.mustChangePassword, lastLoginAt: u.lastLoginAt || null })));
+  const list = db.users.filter(u => u.type === 'observer' && u.parentUserId === req.session.userId)
+    .map(u => ({ id: u.id, username: u.username, createdAt: u.createdAt, canViewAlbums: u.canViewAlbums || [], mustChangePassword: !!u.mustChangePassword, lastLoginAt: u.lastLoginAt || null, linked: false }));
+  // Als Beobachter verknüpfte Hauptbenutzer (2.0.0) erscheinen in derselben Liste
+  linkedUsersFor(db, req.session.userId).forEach(a => {
+    const l = findFamilyLink(a, req.session.userId);
+    list.push({
+      id: a.id, username: a.username, createdAt: l.createdAt || null,
+      canViewAlbums: l.albumIds || [], mustChangePassword: false, lastLoginAt: null,
+      linked: true, status: l.status, expiresAt: l.expiresAt || null, confirmedAt: l.confirmedAt || null
+    });
+  });
+  res.json(list);
 });
 app.post('/api/observers', requireMainUser, requireDEK, (req, res) => {
   const { username, password } = req.body;
@@ -770,19 +880,163 @@ app.put('/api/observers/:id/albums', requireMainUser, (req, res) => {
   const requested = (Array.isArray(canViewAlbums) ? canViewAlbums : []).filter(id => myAlbums.has(id));
   const before = new Set(obs.canViewAlbums || []);
   obs.canViewAlbums = requested;
-  let pendingCount = 0;
-  const newly = requested.filter(id => !before.has(id));
-  if (newly.length) {
-    const affected = new Set();
-    newly.forEach(id => { affected.add(id); descendantAlbumIds(db, id).forEach(d => affected.add(d)); });
-    db.photos.forEach(p => { if (affected.has(p.albumId) && p.encryption === 'user' && !p.reencryptPending) { p.reencryptPending = true; pendingCount++; } });
-  }
+  const pendingCount = markFamilyPending(db, req.session.userId, requested.filter(id => !before.has(id)));
   saveDB(db);
   // Owner is online → run migration right away
   const dek = dekCache.get(req.sessionID);
   const fam = familyCache.get(req.sessionID);
   if (dek) setImmediate(() => migrateUserPhotos(req.session.userId, dek, fam));
   res.json({ success: true, pendingCount });
+});
+
+// Neu freigegebene Alben für die Umschlüsselung in den Familien-Kontext
+// vormerken (gemeinsam genutzt von Beobachter- und Admin-Verknüpfung).
+function markFamilyPending(db, ownerId, newlyGranted) {
+  if (!newlyGranted.length) return 0;
+  const affected = new Set();
+  newlyGranted.forEach(id => { affected.add(id); descendantAlbumIds(db, id).forEach(d => affected.add(d)); });
+  let n = 0;
+  db.photos.forEach(p => {
+    if (p.ownerId === ownerId && affected.has(p.albumId) && p.encryption === 'user' && !p.reencryptPending) { p.reencryptPending = true; n++; }
+  });
+  return n;
+}
+
+// ═══ BESTEHENDE BENUTZER ALS BEOBACHTER VERKNÜPFEN (2.0.0) ══════
+// Nur ein Konto MIT ADMIN-RECHTEN darf verknüpfen: es setzt voraus, dass
+// man andere Konten auflisten und an die eigenen Alben binden kann. Ziel
+// sind bestehende Hauptbenutzer OHNE Adminrechte – sie behalten Konto,
+// eigene Alben und eigenen Schlüssel und bekommen die freigegebenen Alben
+// lesend dazu, ohne dass ein zweites Beobachterkonto nötig ist.
+function requireAdminActor(req, res, next) {
+  const db = loadDB();
+  if (getUser(db, req)?.type !== 'admin') return res.status(403).json({ error: 'Admin rights required' });
+  next();
+}
+
+// Verknüpfbare Konten: Hauptbenutzer ohne Adminrechte, noch nicht verknüpft
+app.get('/api/observers/link-candidates', requireMainUser, requireAdminActor, (req, res) => {
+  const db = loadDB();
+  const already = new Set(linkedUsersFor(db, req.session.userId).map(u => u.id));
+  res.json(db.users
+    .filter(u => u.type === 'user' && u.id !== req.session.userId && !already.has(u.id))
+    .map(u => ({ id: u.id, username: u.username })));
+});
+
+// Verknüpfung anlegen bzw. Einmal-Code neu ausstellen
+app.post('/api/observers/link', requireMainUser, requireAdminActor, requireDEK, (req, res) => {
+  const userId = String(req.body?.userId || '');
+  if (!ID_RE.test(userId)) return res.status(400).json({ error: 'Invalid user id' });
+  if (userId === req.session.userId) return res.status(400).json({ error: 'Cannot link your own account' });
+  const db = loadDB();
+  const target = db.users.find(u => u.id === userId);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+  if (target.type !== 'user') return res.status(403).json({ error: 'Only main users without admin rights can be linked' });
+  const me = getUser(db, req);
+  const fam = ensureFamilyKey(db, me, dekCache.get(req.sessionID));
+  if (!fam) return res.status(500).json({ error: 'Family key error' });
+  familyCache.set(req.sessionID, fam);
+  if (!Array.isArray(target.familyLinks)) target.familyLinks = [];
+  const existing = findFamilyLink(target, me.id);
+  if (existing && existing.status === 'active') return res.status(409).json({ error: 'Already linked' });
+
+  const code = generateRecoveryCode();
+  const salt = crypto.randomBytes(16).toString('hex');
+  const link = existing || { ownerId: me.id, albumIds: [], createdAt: Date.now() };
+  link.status = 'pending';
+  link.salt = salt;
+  link.wrapped = wrapKey(fam, kdf(normalizeRecoveryCode(code), salt));   // Transport nur unter dem Einmal-Code
+  link.expiresAt = Date.now() + LINK_TTL_MS;
+  delete link.familyWrappedDEK;
+  if (!existing) target.familyLinks.push(link);
+  saveDB(db);
+  res.status(201).json({ id: target.id, username: target.username, code, expiresAt: link.expiresAt });
+});
+
+// Album-Freigabe der Verknüpfung ändern
+app.put('/api/observers/link/:userId/albums', requireMainUser, requireAdminActor, (req, res) => {
+  const { canViewAlbums } = req.body;
+  const db = loadDB();
+  const target = db.users.find(u => u.id === req.params.userId && u.type === 'user');
+  const link = target ? findFamilyLink(target, req.session.userId) : null;
+  if (!link) return res.status(404).json({ error: 'Link not found' });
+  const myAlbums = new Set(db.albums.filter(a => a.ownerId === req.session.userId).map(a => a.id));
+  const requested = (Array.isArray(canViewAlbums) ? canViewAlbums : []).filter(id => myAlbums.has(id));
+  const before = new Set(link.albumIds || []);
+  link.albumIds = requested;
+  const pendingCount = markFamilyPending(db, req.session.userId, requested.filter(id => !before.has(id)));
+  const dek = dekCache.get(req.sessionID);
+  let fam = familyCache.get(req.sessionID);
+  if (!fam && dek) { fam = ensureFamilyKey(db, getUser(db, req), dek); if (fam) familyCache.set(req.sessionID, fam); }
+  saveDB(db);
+  if (dek) setImmediate(() => migrateUserPhotos(req.session.userId, dek, fam));
+  res.json({ success: true, pendingCount });
+});
+
+// Verknüpfung durch den Besitzer entziehen
+app.delete('/api/observers/link/:userId', requireMainUser, requireAdminActor, (req, res) => {
+  const db = loadDB();
+  const target = db.users.find(u => u.id === req.params.userId);
+  if (!target || !Array.isArray(target.familyLinks)) return res.status(404).json({ error: 'Link not found' });
+  const before = target.familyLinks.length;
+  target.familyLinks = target.familyLinks.filter(l => l.ownerId !== req.session.userId);
+  if (target.familyLinks.length === before) return res.status(404).json({ error: 'Link not found' });
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// ─── Sicht des verknüpften Admins ─────────────────────────────────
+app.get('/api/me/links', requireMainUser, (req, res) => {
+  const db = loadDB();
+  const me = getUser(db, req);
+  const active = [], pending = [];
+  familyLinksOf(me).forEach(l => {
+    const owner = db.users.find(u => u.id === l.ownerId);
+    const entry = {
+      ownerId: l.ownerId, ownerName: owner ? owner.username : '?',
+      albumCount: (l.albumIds || []).length, createdAt: l.createdAt || null
+    };
+    if (l.status === 'active') { entry.confirmedAt = l.confirmedAt || null; active.push(entry); }
+    else if (!linkExpired(l)) { entry.expiresAt = l.expiresAt || null; pending.push(entry); }
+  });
+  res.json({ active, pending, keysLoaded: (linkedFamilyCache.get(req.sessionID)?.size || 0) });
+});
+
+// Einmal-Code einlösen: Familienschlüssel unter den eigenen DEK umpacken
+app.post('/api/me/links/confirm', rateLimit(5, 900000), requireMainUser, requireDEK, (req, res) => {
+  const db = loadDB();
+  const me = getUser(db, req);
+  const code = normalizeRecoveryCode(req.body?.code);
+  if (code.length !== 32) return res.status(401).json({ error: 'Invalid or expired link code' });
+  const dek = dekCache.get(req.sessionID);
+  let hit = null, fam = null;
+  for (const l of familyLinksOf(me)) {
+    if (l.status !== 'pending' || linkExpired(l) || !l.wrapped) continue;
+    try { fam = unwrapKey(l.wrapped, kdf(code, l.salt)); hit = l; break; } catch {}
+  }
+  if (!hit) return res.status(401).json({ error: 'Invalid or expired link code' });
+  hit.status = 'active';
+  hit.familyWrappedDEK = wrapKey(fam, dek);   // ab jetzt nur noch unter dem eigenen DEK
+  hit.confirmedAt = Date.now();
+  delete hit.wrapped; delete hit.salt; delete hit.expiresAt;
+  saveDB(db);
+  loadLinkedFamilies(me, dek, req.sessionID);
+  const owner = db.users.find(u => u.id === hit.ownerId);
+  res.json({ success: true, ownerName: owner ? owner.username : '?' });
+});
+
+// Verknüpfung durch den Admin selbst aufgeben
+app.delete('/api/me/links/:ownerId', requireMainUser, (req, res) => {
+  const db = loadDB();
+  const me = getUser(db, req);
+  const before = familyLinksOf(me).length;
+  if (!before) return res.status(404).json({ error: 'Link not found' });
+  me.familyLinks = me.familyLinks.filter(l => l.ownerId !== req.params.ownerId);
+  if (me.familyLinks.length === before) return res.status(404).json({ error: 'Link not found' });
+  saveDB(db);
+  const cache = linkedFamilyCache.get(req.sessionID);
+  if (cache) { cache.delete(req.params.ownerId); if (!cache.size) linkedFamilyCache.delete(req.sessionID); }
+  res.json({ success: true });
 });
 
 // ═══ ALBUMS ═══════════════════════════════════════════════════════
@@ -1116,9 +1370,10 @@ app.get('/api/albums/:albumId/photos', requireAuth, (req, res) => {
   const mapPhoto = p => {
     const owner = db.users.find(u => u.id === p.ownerId);
     const keyInfo = resolveReadKey(db, p, req);
-    // Beobachter erhalten kein linkedHere: das Link-Badge ist für sie nutzlos
+    // Kein linkedHere für Beobachter und verknüpfte Hauptbenutzer: das Link-Badge
+    // ist für sie nutzlos und verriete nur die Album-Organisation des Besitzers
     // (keine Link-Verwaltung, kein "Folgen") und verrät nur Album-Organisation.
-    return { id: p.id, albumId: p.albumId, linkedHere: me.type !== 'observer' && p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, size: p.size,
+    return { id: p.id, albumId: p.albumId, linkedHere: (p.ownerId === req.session.userId || me.type === 'admin') && p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, size: p.size,
       ownerId: p.ownerId, ownerName: owner?.username ?? '?', shared: p.shared || false,
       mimeType: p.mimeType || 'image/jpeg',
       streamable: p.encFormat === 'chunked',
@@ -1292,6 +1547,15 @@ app.get('/api/photos/:id/stream', requireAuth, (req, res) => {
   const f = path.join(PHOTOS_DIR, `${photo.id}.enc`);
   if (!fs.existsSync(f)) return res.status(404).json({ error: 'File not found' });
 
+  // Sicherheitsnetz (1.12.1): Video-View serverseitig beim Playback-Start zählen,
+  // unabhängig davon, ob der Client-/view-Fetch ankommt (gecachtes altes Frontend,
+  // blockierter Request o. ä.). "Start" = kein Range-Header oder Range ab Byte 0
+  // (deckt auch Safaris bytes=0-1-Probe ab); Seek-Requests (bytes=N-) zählen nicht.
+  // Owner-Ausnahme + 10-Min-Dedup in countViewOnce verhindern Doppelzählung mit /view.
+  if (!req.headers.range || /^bytes=0-/.test(req.headers.range)) {
+    if (countViewOnce(db, photo, req.session.userId)) saveDB(db);
+  }
+
   const total = photo.plainSize;
   let start = 0, end = total - 1, partial = false;
   const m = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
@@ -1341,12 +1605,8 @@ app.post('/api/photos/:id/view', requireAuth, (req, res) => {
   if (!canView) return res.status(403).json({ error: 'No access' });
   if (effectiveHidden(db, photo.albumId) && !isUnlocked(req, db, photo.albumId))
     return res.status(423).json({ error: 'Album locked', code: 'LOCKED' });
-  // Owner excluded, 10-minute dedup per user
-  if (photo.ownerId !== req.session.userId) {
-    const tenMinAgo = Date.now() - 600000;
-    const recent = (photo.viewLog || []).find(e => e.userId === req.session.userId && e.ts > tenMinAgo);
-    if (!recent) { trackPhotoView(db, photo.id, req.session.userId); saveDB(db); }
-  }
+  // Owner excluded, 10-minute dedup per user (zentral in countViewOnce)
+  if (countViewOnce(db, photo, req.session.userId)) saveDB(db);
   res.json({ success: true });
 });
 
@@ -1367,6 +1627,12 @@ app.get('/api/photos/:id/full', requireAuth, (req, res) => {
   if (keyInfo.denied) return res.status(401).json({ error: 'Session key missing', code: 'DEK_MISSING' });
   const f = path.join(PHOTOS_DIR, `${photo.id}.enc`);
   if (!fs.existsSync(f)) return res.status(404).json({ error: 'File not found' });
+  // Sicherheitsnetz (1.12.1): nur für VIDEOS (Legacy-Ganzdatei-Wiedergabe via /full).
+  // Fotos werden weiterhin ausschließlich über /view gezählt ("einziger View-Zähler"
+  // bleibt für Fotos erhalten; /full feuert bei Fotos auch für die progressive Lightbox).
+  if (photo.mimeType && photo.mimeType.startsWith('video/')) {
+    if (countViewOnce(db, photo, req.session.userId)) saveDB(db);
+  }
   try {
     res.set('Content-Type', photo.mimeType || 'image/jpeg');
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
@@ -1538,18 +1804,33 @@ app.get('/api/settings', (req, res) => {
   res.json(getSettings(db));
 });
 app.put('/api/settings', requireAdmin, (req, res) => {
-  const { galleryName, lbMaxPhotoPx, lbMaxVideoPx, thumbSize } = req.body || {};
+  const { galleryName, taglineDe, taglineEn, lbMaxPhotoPx, lbMaxVideoPx, thumbSize, colors } = req.body || {};
   if (galleryName !== undefined) {
     const name = String(galleryName).trim();
     if (!GALLERY_NAME_RE.test(name)) return res.status(400).json({ error: 'Invalid gallery name (1-40 chars, no < >)' });
+  }
+  for (const [label, v] of [['taglineDe', taglineDe], ['taglineEn', taglineEn]]) {
+    if (v !== undefined && !TAGLINE_RE.test(String(v).trim())) {
+      return res.status(400).json({ error: `Invalid ${label} (max 80 chars, no < >)` });
+    }
+  }
+  if (colors !== undefined) {
+    if (typeof colors !== 'object' || colors === null) return res.status(400).json({ error: 'Invalid colors object' });
+    for (const [k, v] of Object.entries(colors)) {
+      if (!(k in SETTINGS_DEFAULTS.colors)) return res.status(400).json({ error: `Unknown color key: ${k}` });
+      if (!HEX_COLOR_RE.test(String(v).trim())) return res.status(400).json({ error: `Invalid color for ${k} (expected #rrggbb)` });
+    }
   }
   const db = loadDB();
   const current = getSettings(db);
   db.settings = sanitizeSettings({
     galleryName:  galleryName  !== undefined ? galleryName  : current.galleryName,
+    taglineDe:    taglineDe    !== undefined ? taglineDe    : current.taglineDe,
+    taglineEn:    taglineEn    !== undefined ? taglineEn    : current.taglineEn,
     lbMaxPhotoPx: lbMaxPhotoPx !== undefined ? lbMaxPhotoPx : current.lbMaxPhotoPx,
     lbMaxVideoPx: lbMaxVideoPx !== undefined ? lbMaxVideoPx : current.lbMaxVideoPx,
-    thumbSize:    thumbSize    !== undefined ? thumbSize    : current.thumbSize
+    thumbSize:    thumbSize    !== undefined ? thumbSize    : current.thumbSize,
+    colors:       colors       !== undefined ? Object.assign({}, current.colors, colors) : current.colors
   });
   saveDB(db);
   res.json(db.settings);
