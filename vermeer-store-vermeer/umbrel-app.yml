@@ -2,7 +2,7 @@ manifestVersion: 1
 id: vermeer-store-vermeer
 category: files
 name: Vermeer
-version: "2.0.0"
+version: "2.5.0"
 tagline: Encrypted photo and video albums – private by design
 description: >-
   Vermeer keeps your photos and videos AES-256 encrypted on your own Umbrel.
@@ -23,7 +23,7 @@ description: >-
 
   - Albums and sub-albums with unlimited depth, plus linking one photo into several albums
 
-  - Hidden albums protected by a 4-digit PIN
+  - Hidden albums protected by a 4-digit PIN, optionally invisible to observers
 
   - Three roles: admin, main users, and read-only observers with per-album access
 
@@ -33,37 +33,43 @@ description: >-
 
   - Configurable gallery: name, login taglines, colours, thumbnail and lightbox sizes
 
+  - Favourites, slideshow and manual photo ordering per album
+
+  - Duplicate detection on upload; 10-minute undo window after deleting
+
   - Owner-only ZIP export as backup; no single-file downloads
+
+  - Installable as an app on phones and desktops (no service worker)
 
   - DE / EN language toggle
 
 
   First login: admin / admin – change the password immediately.
 releaseNotes: >-
-  2.0.0 – Major release. Vermeer now handles videos as a first-class citizen:
-  MP4, WebM and MOV files are stored in a chunked AES-256-GCM format and played
-  back by real HTTP range streaming, so seeking works and memory usage stays
-  low. Encrypted poster frames are generated automatically, and videos can be
-  used as album covers.
+  2.5.0 – A round of small conveniences plus one invisible but important
+  safety net.
 
 
-  Large uploads no longer depend on the reverse proxy: files are split
-  client-side and reassembled on the server, which keeps uploads working behind
-  100 MB request limits such as Cloudflare Tunnel.
+  Photos can now be moved to any position inside an album: select one photo,
+  press "Position", then tap the photo it should go behind. No dragging, so it
+  works the same on a phone as on a desktop. A new sort menu offers "by capture
+  date", which uses the capture time read from the file during import.
 
 
-  A single photo can now appear in several albums at once without being
-  duplicated, and admins get a new Gallery Settings page: gallery name, login
-  taglines per language, eight interface colours, thumbnail size and lightbox
-  maximum sizes – applied instantly, no restart needed.
+  Also new: mark photos as favourites and view them all in one place, a
+  slideshow button in the large view, duplicate files are recognised during
+  upload and skipped, and deleting now shows an "Undo" button for ten minutes
+  before anything is actually removed. Admins see how full the disk is.
 
 
-  Plus many refinements: reliable back-button behaviour on Android, working
-  native video controls in the lightbox, horizontally scrollable statistics on
-  phones, and server-side view counting for videos.
+  Under the hood, the database is now written with a full sync and keeps five
+  rolling backups; if the main file is ever damaged, the app falls back to the
+  newest usable copy instead of starting empty. The interface is no longer
+  cached, so updates take effect immediately without clearing website data.
+  The gallery can be added to a phone's home screen.
 
 
-  Updating from 1.x keeps all data, albums and users.
+  Updating from 2.x keeps all data, albums and users.
 developer: Vermeer
 website: https://github.com/cfi700/vermeer-umbrel-app-store
 dependencies: []

@@ -20,7 +20,7 @@ const FileStore = require('session-file-store')(session);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.5.0';
 
 // ─── Galerie-Einstellungen (Admin, ab 1.11.0) ─────────────────────
 // Persistiert in db.json unter `settings`. Alle Werte sind reine
@@ -84,6 +84,11 @@ function deriveLegacyKey(seed) {
 }
 const LEGACY_KEY = deriveLegacyKey(process.env.ENCRYPTION_KEY);
 const SHARED_KEY = crypto.createHash('sha256').update(LEGACY_KEY).update('vermeer-shared-v1').digest();
+// Duplikaterkennung (2.5.0): Fingerabdruck des KLARTEXTS, aber als HMAC unter
+// einem serverspezifischen Schlüssel – ein reiner SHA-256 in der db.json würde
+// sonst bestätigen, dass eine bekannte Datei hier liegt (Bekanntes-Klartext-Test).
+const DEDUP_KEY  = crypto.createHash('sha256').update(LEGACY_KEY).update('vermeer-dedup-v1').digest();
+function contentHash(buf) { return crypto.createHmac('sha256', DEDUP_KEY).update(buf).digest('hex'); }
 
 const SCRYPT_OPTS = { N: 2 ** 15, r: 8, p: 1, maxmem: 128 * 1024 * 1024 };
 function kdf(secret, saltHex) {
@@ -110,24 +115,78 @@ const os = require('os');
 // Extract a 400x400 poster frame from a plaintext video buffer via ffmpeg.
 // Uses a short-lived temp file (ffmpeg needs seekable input for mp4/mov);
 // the file is removed immediately afterwards.
-function extractVideoPoster(plainBuf, size) {
+// Ab 2.5.0 liefert die Funktion zusätzlich die Aufnahmezeit (ffprobe-Tag
+// `creation_time`), damit die eine Temp-Datei für beides reicht.
+function extractVideoMeta(plainBuf, size) {
   const px = clampInt(size, 200, 800, SETTINGS_DEFAULTS.thumbSize);
   const tmpIn = path.join(os.tmpdir(), `vmr-${crypto.randomBytes(6).toString('hex')}.vid`);
   const tmpOut = tmpIn + '.jpg';
   const vf = `scale=${px}:${px}:force_original_aspect_ratio=increase,crop=${px}:${px}`;
+  const out = { poster: null, takenAt: null };
   try {
     fs.writeFileSync(tmpIn, plainBuf);
+    // Aufnahmezeit (optional – schlägt sie fehl, bleibt takenAt einfach leer)
+    try {
+      const pr = spawnSync('ffprobe', ['-v', 'quiet', '-show_entries', 'format_tags=creation_time',
+        '-of', 'default=nw=1:nk=1', tmpIn], { timeout: 10000, encoding: 'utf8' });
+      const iso = String(pr.stdout || '').trim();
+      const ts = iso ? Date.parse(iso) : NaN;
+      if (Number.isFinite(ts) && ts > 0) out.takenAt = ts;
+    } catch {}
     let r = spawnSync('ffmpeg', ['-y', '-ss', '1', '-i', tmpIn, '-frames:v', '1', '-vf', vf, '-q:v', '4', tmpOut], { timeout: 20000 });
     if (r.status !== 0 || !fs.existsSync(tmpOut)) {
       r = spawnSync('ffmpeg', ['-y', '-i', tmpIn, '-frames:v', '1', '-vf', vf, '-q:v', '4', tmpOut], { timeout: 20000 });
-      if (r.status !== 0 || !fs.existsSync(tmpOut)) return null;
+      if (r.status !== 0 || !fs.existsSync(tmpOut)) return out;
     }
-    return fs.readFileSync(tmpOut);
-  } catch { return null; }
+    out.poster = fs.readFileSync(tmpOut);
+    return out;
+  } catch { return out; }
   finally {
     try { fs.unlinkSync(tmpIn); } catch {}
     try { fs.unlinkSync(tmpOut); } catch {}
   }
+}
+function extractVideoPoster(plainBuf, size) { return extractVideoMeta(plainBuf, size).poster; }
+
+// ─── Aufnahmezeit aus EXIF (2.5.0) ────────────────────────────────
+// Minimal-Parser für den APP1/TIFF-Block, den sharp als `metadata().exif`
+// zurückgibt – bewusst ohne zusätzliche Dependency. Gelesen werden nur die
+// drei Datumsfelder; Priorität: DateTimeOriginal > DateTimeDigitized > DateTime.
+// Der Zeitstempel steht in EXIF ohne Zeitzone; er wird als UTC interpretiert.
+// Für die reine Sortierung ist das ausreichend und stabil.
+function parseExifDateTime(buf) {
+  if (!Buffer.isBuffer(buf) || buf.length < 16) return null;
+  const tiff = buf.toString('ascii', 0, 4) === 'Exif' ? 6 : 0;
+  const bom = buf.toString('ascii', tiff, tiff + 2);
+  if (bom !== 'II' && bom !== 'MM') return null;
+  const le = bom === 'II';
+  const u16 = o => (o + 2 > buf.length ? 0 : (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o)));
+  const u32 = o => (o + 4 > buf.length ? 0 : (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o)));
+  if (u16(tiff + 2) !== 42) return null;
+  const PRIO = { 0x9003: 3, 0x9004: 2, 0x0132: 1 };   // Original > Digitized > DateTime
+  let best = null;
+  const readIFD = (rel, depth) => {
+    if (depth > 2 || rel <= 0) return;
+    const base = tiff + rel;
+    if (base + 2 > buf.length) return;
+    const n = u16(base);
+    for (let i = 0; i < n; i++) {
+      const e = base + 2 + i * 12;
+      if (e + 12 > buf.length) return;
+      const tag = u16(e), type = u16(e + 2), cnt = u32(e + 4);
+      if (tag === 0x8769) { readIFD(u32(e + 8), depth + 1); continue; }   // Zeiger auf Exif-IFD
+      const prio = PRIO[tag];
+      if (!prio || type !== 2 || cnt < 19) continue;
+      const vOff = cnt <= 4 ? (e + 8) : (tiff + u32(e + 8));
+      if (vOff < 0 || vOff + 19 > buf.length) continue;
+      const m = /^(\d{4}):(\d{2}):(\d{2}) (\d{2}):(\d{2}):(\d{2})$/.exec(buf.toString('ascii', vOff, vOff + 19));
+      if (!m) continue;
+      const ts = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+      if (Number.isFinite(ts) && ts > 0 && (!best || prio > best.prio)) best = { prio, ts };
+    }
+  };
+  readIFD(u32(tiff + 4), 0);
+  return best ? best.ts : null;
 }
 
 const CHUNK_SIZE = 1024 * 1024;
@@ -186,6 +245,45 @@ setInterval(() => { if (dekCache.size > 2000) dekCache.clear(); if (familyCache.
 const SHARED_ALBUM_ID = '__shared__';
 const MAX_VIEW_LOG = 500;
 
+// ─── Robustes Schreiben der db.json (2.5.0) ───────────────────────
+// Die db.json hält sämtliche verpackten Schlüssel – ist sie zerstört, sind die
+// Fotos unwiederbringlich, obwohl die verschlüsselten Dateien noch daliegen.
+// Deshalb: Schreiben in eine Temp-Datei mit fsync und atomarem rename (ein
+// Stromausfall kann so nie eine halb geschriebene Datei hinterlassen) plus
+// rollierende Kopien db.json.1 … db.json.5 (max. eine pro Stunde).
+const DB_BACKUPS = 5;
+const DB_BACKUP_INTERVAL = 3600000;   // höchstens stündlich rotieren
+let lastDbBackupAt = 0;
+function dbBackupPath(i) { return `${DB_FILE}.${i}`; }
+function rotateDbBackups() {
+  try {
+    if (!fs.existsSync(DB_FILE)) return;
+    for (let i = DB_BACKUPS - 1; i >= 1; i--) {
+      const from = dbBackupPath(i), to = dbBackupPath(i + 1);
+      if (fs.existsSync(from)) fs.renameSync(from, to);
+    }
+    fs.copyFileSync(DB_FILE, dbBackupPath(1));
+  } catch (e) { console.error('DB backup rotation failed:', e.message); }
+}
+// Liest die db.json und fällt bei defektem Inhalt auf die jüngste brauchbare
+// Sicherung zurück (laut und im Log sichtbar, damit es nicht unbemerkt bleibt).
+function readDbFile() {
+  const candidates = [DB_FILE];
+  for (let i = 1; i <= DB_BACKUPS; i++) candidates.push(dbBackupPath(i));
+  for (const f of candidates) {
+    if (!fs.existsSync(f)) continue;
+    try {
+      const parsed = JSON.parse(fs.readFileSync(f, 'utf8'));
+      if (parsed && Array.isArray(parsed.users)) {
+        if (f !== DB_FILE) console.error(`DB RECOVERY: ${DB_FILE} unusable – falling back to ${f}`);
+        return parsed;
+      }
+      console.error(`DB file has no users array: ${f}`);
+    } catch (e) { console.error(`DB file unreadable (${f}):`, e.message); }
+  }
+  throw new Error('No readable database file – refusing to start with an empty database');
+}
+
 function loadDB() {
   if (!fs.existsSync(DB_FILE)) {
     const db = { users: [], albums: [], photos: [] };
@@ -195,7 +293,7 @@ function loadDB() {
     });
     saveDB(db); return db;
   }
-  const db = JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+  const db = readDbFile();
   if (!db.albums) db.albums = [];
   if (!db.photos) db.photos = [];
   if (!db.observerLoginLog) db.observerLoginLog = [];
@@ -206,7 +304,13 @@ function loadDB() {
     if (u.mustChangePassword === undefined) u.mustChangePassword = false;
     if (!u.type) u.type = u.role === 'admin' ? 'admin' : 'user';   // migrate pre-0.9
   });
-  db.albums.forEach(a => { if (!a.views) a.views = 0; if (a.hidden === undefined) a.hidden = false; });
+  db.albums.forEach(a => {
+    if (!a.views) a.views = 0;
+    if (a.hidden === undefined) a.hidden = false;
+    // 2.5.0: manuelle Reihenfolge – fehlendes Feld = Standardsortierung,
+    // kaputtes Feld wird still verworfen (defensive Selbstheilung).
+    if (a.photoOrder !== undefined && !Array.isArray(a.photoOrder)) delete a.photoOrder;
+  });
   db.photos.forEach(p => {
     if (p.shared === undefined) p.shared = false;
     if (p.views === undefined) p.views = 0;
@@ -216,12 +320,73 @@ function loadDB() {
   return db;
 }
 function saveDB(db) {
+  const now = Date.now();
+  if (now - lastDbBackupAt > DB_BACKUP_INTERVAL) { lastDbBackupAt = now; rotateDbBackups(); }
   const tmp = DB_FILE + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(db, null, 2));
+  const data = JSON.stringify(db, null, 2);
+  const fd = fs.openSync(tmp, 'w');
+  try { fs.writeSync(fd, data); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
   fs.renameSync(tmp, DB_FILE);
+  // Verzeichnis-fsync: sonst kann der rename-Eintrag bei Stromausfall verloren gehen
+  try { const dfd = fs.openSync(DATA_DIR, 'r'); try { fs.fsyncSync(dfd); } finally { fs.closeSync(dfd); } } catch {}
 }
 function uid() { return crypto.randomBytes(8).toString('hex'); }
 const ID_RE = /^[a-f0-9]{16}$/;   // uid() format – blocks path traversal / injection
+
+// ─── Papierkorb mit Rückgängig-Fenster (2.5.0) ────────────────────
+// Löschen setzt zunächst nur `deletedAt`; die verschlüsselten Dateien bleiben
+// liegen, bis der Janitor sie nach PHOTO_TRASH_TTL endgültig entfernt. In der
+// Zwischenzeit kann der Besitzer die Aktion rückgängig machen. Alle Leseflächen
+// gehen über `findPhoto`/`isAlive`, damit gelöschte Fotos nirgends auftauchen.
+const PHOTO_TRASH_TTL = 10 * 60 * 1000;
+function isAlive(p) { return !!p && !p.deletedAt; }
+function findPhoto(db, id) { const p = db.photos.find(x => x.id === id); return isAlive(p) ? p : undefined; }
+
+// ─── Manuelle Reihenfolge je Album (2.5.0) ────────────────────────
+// Die Position gehört zur BEZIEHUNG Foto↔Album, nicht zum Foto: ein Foto kann
+// über `linkedAlbumIds` in mehreren Alben liegen und dort verschiedene Plätze
+// haben. Deshalb liegt die Reihenfolge als ID-Liste am Album.
+// Fehlt `photoOrder`, gilt wie bisher "neueste zuerst". Unbekannte IDs (gelöscht,
+// entlinkt) werden beim Lesen ignoriert und beim nächsten Schreiben entfernt.
+function albumHasManualOrder(album) { return Array.isArray(album?.photoOrder); }
+function sortPhotosForAlbum(album, list) {
+  if (!albumHasManualOrder(album)) return list.slice().sort((a, b) => b.uploadedAt - a.uploadedAt);
+  const pos = new Map();
+  album.photoOrder.forEach((id, i) => { if (!pos.has(id)) pos.set(id, i); });
+  const listed = [], rest = [];
+  list.forEach(p => (pos.has(p.id) ? listed : rest).push(p));
+  listed.sort((a, b) => pos.get(a.id) - pos.get(b.id));
+  // Neu hinzugekommene Fotos hängen chronologisch hinten an (Aufnahmezeit,
+  // ersatzweise Upload-Zeit) – so wächst ein kuratiertes Album vorhersagbar.
+  rest.sort((a, b) => (a.takenAt || a.uploadedAt) - (b.takenAt || b.uploadedAt));
+  return listed.concat(rest);
+}
+// Alle lebenden Fotos, die in diesem Album erscheinen (Home-Album oder verlinkt)
+function photosOfAlbum(db, albumId) { return db.photos.filter(p => isAlive(p) && photoInAlbum(p, albumId)); }
+
+// Janitor: räumt abgelaufene Papierkorb-Einträge endgültig ab (Dateien,
+// Cover-Verweise und Einträge in den Sortierlisten).
+function purgeExpiredPhotos() {
+  try {
+    const db = loadDB();
+    const cutoff = Date.now() - PHOTO_TRASH_TTL;
+    const gone = db.photos.filter(p => p.deletedAt && p.deletedAt < cutoff);
+    if (!gone.length) return;
+    const goneIds = new Set(gone.map(p => p.id));
+    gone.forEach(p => {
+      [path.join(PHOTOS_DIR, `${p.id}.enc`), path.join(THUMBS_DIR, `${p.id}.enc`)]
+        .forEach(f => { try { fs.unlinkSync(f); } catch {} });
+    });
+    db.photos = db.photos.filter(p => !goneIds.has(p.id));
+    db.albums.forEach(a => {
+      if (a.coverPhotoId && goneIds.has(a.coverPhotoId)) delete a.coverPhotoId;
+      if (Array.isArray(a.photoOrder)) a.photoOrder = a.photoOrder.filter(id => !goneIds.has(id));
+    });
+    saveDB(db);
+    console.log(`Trash: ${gone.length} photo(s) permanently removed`);
+  } catch (e) { console.error('Trash purge error:', e.message); }
+}
+setInterval(purgeExpiredPhotos, 120000);
 
 // Zentrale View-Zählung mit Owner-Ausnahme und 10-Min-Dedup pro Nutzer.
 // Wird von /view (Lightbox-Öffnung) UND als serverseitiges Sicherheitsnetz
@@ -236,7 +401,7 @@ function countViewOnce(db, photo, userId) {
 }
 
 function trackPhotoView(db, photoId, userId) {
-  const photo = db.photos.find(p => p.id === photoId); if (!photo) return;
+  const photo = findPhoto(db, photoId); if (!photo) return;
   photo.views = (photo.views || 0) + 1;
   photo.viewLog = photo.viewLog || [];
   photo.viewLog.push({ userId, ts: Date.now() });
@@ -252,14 +417,36 @@ function expandAlbumIds(db, ids) {
   while (changed) { changed = false; db.albums.forEach(a => { if (a.parentId && set.has(a.parentId) && !set.has(a.id)) { set.add(a.id); changed = true; } }); }
   return [...set];
 }
+// Versteckte Alben für fremde Betrachter ausblenden (2.1.0).
+// Das Recht wird pro Beobachter (`user.canSeeHidden`) bzw. pro Verknüpfung
+// (`link.canSeeHidden`) vergeben, Default ist "nein" (Feld fehlt = false).
+// OHNE das Recht verschwindet ein verstecktes Album samt Unteralben und Fotos
+// vollständig aus der Sicht – keine Kachel, kein Fotolisten-Zugriff, kein
+// Thumb/Full/Stream. MIT dem Recht verhält es sich wie beim Besitzer:
+// sichtbar, aber weiterhin durch die PIN gesperrt.
+// Der Schlüsselkontext bleibt unberührt (`albumIsFamilyGranted` liest weiter
+// die rohen Freigabelisten) – ein Umschalten löst also keine Umschlüsselung aus.
+function filterHiddenAlbums(db, ids, allowHidden) {
+  return allowHidden ? ids : ids.filter(id => !effectiveHidden(db, id));
+}
 function visibleAlbumIds(db, userId) {
   const user = db.users.find(u => u.id === userId);
   if (!user) return [];
   if (user.type === 'admin') return db.albums.map(a => a.id);
-  if (user.type === 'observer') return expandAlbumIds(db, user.canViewAlbums || []);
+  if (user.type === 'observer')
+    return filterHiddenAlbums(db, expandAlbumIds(db, user.canViewAlbums || []), !!user.canSeeHidden);
   const owned = db.albums.filter(a => a.ownerId === userId).map(a => a.id);
-  // Verknüpfte Alben (2.0.0) erst ab bestätigter Verknüpfung – vorher fehlt der Schlüssel
-  return expandAlbumIds(db, [...new Set([...owned, ...(user.canViewAlbums || []), ...linkedAlbumIdsFor(user, true)])]);
+  // Eigene und per Admin-Grant zugeteilte Alben bleiben ungefiltert –
+  // der Hidden-Filter betrifft nur die Beobachter-Sicht.
+  const ids = new Set(expandAlbumIds(db, [...owned, ...(user.canViewAlbums || [])]));
+  // Verknüpfte Alben (2.0.0) erst ab bestätigter Verknüpfung – vorher fehlt der
+  // Schlüssel. Der Hidden-Filter gilt pro Verknüpfung, weil ein Konto bei
+  // mehreren Besitzern mit unterschiedlichem Recht verknüpft sein kann.
+  familyLinksOf(user).forEach(l => {
+    if (linkExpired(l) || l.status !== 'active') return;
+    filterHiddenAlbums(db, expandAlbumIds(db, l.albumIds || []), !!l.canSeeHidden).forEach(id => ids.add(id));
+  });
+  return [...ids];
 }
 function canViewAlbum(db, userId, albumId) {
   if (albumId === SHARED_ALBUM_ID) { const u = db.users.find(x => x.id === userId); return u && u.type !== 'observer'; }
@@ -530,7 +717,15 @@ app.use(session({
   rolling: true,   // refresh maxAge on activity
   cookie: { maxAge: 86400000, httpOnly: true, sameSite: 'lax', path: '/' }
 }));
-app.use(express.static(path.join(__dirname, '../frontend')));
+// 2.5.0: Das Frontend steckt vollständig in einer einzigen index.html. Wird sie
+// gecacht, laufen Handys nach einem Update wochenlang auf einer alten Fassung
+// (Ursache mehrerer Altfehler). `no-store` genau für HTML kostet praktisch
+// nichts und macht das "hart neu laden" überflüssig.
+app.use(express.static(path.join(__dirname, '../frontend'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.html')) res.set('Cache-Control', 'no-store, must-revalidate');
+  }
+}));
 
 function requireAuth(req, res, next) { if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' }); next(); }
 function requireAdmin(req, res, next) {
@@ -816,13 +1011,13 @@ app.put('/api/users/:id/album-permissions', requireAdmin, (req, res) => {
 app.get('/api/observers', requireMainUser, (req, res) => {
   const db = loadDB();
   const list = db.users.filter(u => u.type === 'observer' && u.parentUserId === req.session.userId)
-    .map(u => ({ id: u.id, username: u.username, createdAt: u.createdAt, canViewAlbums: u.canViewAlbums || [], mustChangePassword: !!u.mustChangePassword, lastLoginAt: u.lastLoginAt || null, linked: false }));
+    .map(u => ({ id: u.id, username: u.username, createdAt: u.createdAt, canViewAlbums: u.canViewAlbums || [], canSeeHidden: !!u.canSeeHidden, mustChangePassword: !!u.mustChangePassword, lastLoginAt: u.lastLoginAt || null, linked: false }));
   // Als Beobachter verknüpfte Hauptbenutzer (2.0.0) erscheinen in derselben Liste
   linkedUsersFor(db, req.session.userId).forEach(a => {
     const l = findFamilyLink(a, req.session.userId);
     list.push({
       id: a.id, username: a.username, createdAt: l.createdAt || null,
-      canViewAlbums: l.albumIds || [], mustChangePassword: false, lastLoginAt: null,
+      canViewAlbums: l.albumIds || [], canSeeHidden: !!l.canSeeHidden, mustChangePassword: false, lastLoginAt: null,
       linked: true, status: l.status, expiresAt: l.expiresAt || null, confirmedAt: l.confirmedAt || null
     });
   });
@@ -872,7 +1067,7 @@ app.put('/api/observers/:id/password', requireMainUser, requireDEK, (req, res) =
   res.json({ success: true });
 });
 app.put('/api/observers/:id/albums', requireMainUser, (req, res) => {
-  const { canViewAlbums } = req.body;
+  const { canViewAlbums, canSeeHidden } = req.body;
   const db = loadDB();
   const obs = db.users.find(u => u.id === req.params.id && u.type === 'observer' && u.parentUserId === req.session.userId);
   if (!obs) return res.status(404).json({ error: 'Observer not found' });
@@ -880,6 +1075,7 @@ app.put('/api/observers/:id/albums', requireMainUser, (req, res) => {
   const requested = (Array.isArray(canViewAlbums) ? canViewAlbums : []).filter(id => myAlbums.has(id));
   const before = new Set(obs.canViewAlbums || []);
   obs.canViewAlbums = requested;
+  setHiddenRight(obs, canSeeHidden);
   const pendingCount = markFamilyPending(db, req.session.userId, requested.filter(id => !before.has(id)));
   saveDB(db);
   // Owner is online → run migration right away
@@ -888,6 +1084,14 @@ app.put('/api/observers/:id/albums', requireMainUser, (req, res) => {
   if (dek) setImmediate(() => migrateUserPhotos(req.session.userId, dek, fam));
   res.json({ success: true, pendingCount });
 });
+
+// Recht "darf versteckte Alben sehen" setzen (2.1.0). Undefiniert = unverändert
+// (ältere, gecachte Frontends schicken das Feld nicht mit); false löscht das
+// Feld wieder, damit die db.json nicht mit Default-Werten wächst.
+function setHiddenRight(target, value) {
+  if (value === undefined) return;
+  if (value) target.canSeeHidden = true; else delete target.canSeeHidden;
+}
 
 // Neu freigegebene Alben für die Umschlüsselung in den Familien-Kontext
 // vormerken (gemeinsam genutzt von Beobachter- und Admin-Verknüpfung).
@@ -955,7 +1159,7 @@ app.post('/api/observers/link', requireMainUser, requireAdminActor, requireDEK, 
 
 // Album-Freigabe der Verknüpfung ändern
 app.put('/api/observers/link/:userId/albums', requireMainUser, requireAdminActor, (req, res) => {
-  const { canViewAlbums } = req.body;
+  const { canViewAlbums, canSeeHidden } = req.body;
   const db = loadDB();
   const target = db.users.find(u => u.id === req.params.userId && u.type === 'user');
   const link = target ? findFamilyLink(target, req.session.userId) : null;
@@ -964,6 +1168,7 @@ app.put('/api/observers/link/:userId/albums', requireMainUser, requireAdminActor
   const requested = (Array.isArray(canViewAlbums) ? canViewAlbums : []).filter(id => myAlbums.has(id));
   const before = new Set(link.albumIds || []);
   link.albumIds = requested;
+  setHiddenRight(link, canSeeHidden);
   const pendingCount = markFamilyPending(db, req.session.userId, requested.filter(id => !before.has(id)));
   const dek = dekCache.get(req.sessionID);
   let fam = familyCache.get(req.sessionID);
@@ -1044,17 +1249,25 @@ app.get('/api/albums', requireAuth, (req, res) => {
   const db = loadDB();
   const me = getUser(db, req);
   const allowed = visibleAlbumIds(db, req.session.userId);
-  const albums = db.albums.filter(a => allowed.includes(a.id)).map(a => {
+  const allowedSet = new Set(allowed);
+  // 2.1.0: Zähler und Cover dürfen nur Fotos berücksichtigen, deren Home-Album
+  // für diesen Betrachter sichtbar ist – sonst zählt bzw. zeigt die Kachel
+  // Inhalte aus einem ausgeblendeten versteckten Album (Thumb liefert 403).
+  // 2.5.0: Fotos im Papierkorb zählen und erscheinen nirgends mehr.
+  const photoVisible = p => isAlive(p) && ((p.shared && me.type !== 'observer') || allowedSet.has(p.albumId));
+  const albums = db.albums.filter(a => allowedSet.has(a.id)).map(a => {
     const owner = db.users.find(u => u.id === a.ownerId);
     const hid = effectiveHidden(db, a.id);
     const locked = hid && !isUnlocked(req, db, a.id);
+    const cover = a.coverPhotoId ? findPhoto(db, a.coverPhotoId) : null;
     return {
       id: a.id, name: a.name, parentId: a.parentId,
       ownerId: a.ownerId, ownerName: owner?.username ?? '?',
       description: locked ? '' : (a.description || ''), createdAt: a.createdAt,
-      photoCount: locked ? 0 : db.photos.filter(p => photoInAlbum(p, a.id)).length,
-      coverPhotoId: locked ? null : (a.coverPhotoId || null),
+      photoCount: locked ? 0 : db.photos.filter(p => photoInAlbum(p, a.id) && photoVisible(p)).length,
+      coverPhotoId: (locked || !cover || !photoVisible(cover)) ? null : a.coverPhotoId,
       hidden: !!a.hidden, effectiveHidden: hid, hiddenRootId: hid ? hiddenRootFor(db, a.id) : null, locked,
+      manualOrder: albumHasManualOrder(a),   // 2.5.0
       canUpload: canUploadToAlbum(db, req.session.userId, a.id),
       canManage: canManageAlbum(db, req.session.userId, a.id)
     };
@@ -1121,6 +1334,9 @@ app.post('/api/albums/:id/unlock', requireAuth, rateLimit(5, 900000), (req, res)
   const db = loadDB();
   const album = db.albums.find(a => a.id === req.params.id);
   if (!album) return res.status(404).json({ error: 'Album not found' });
+  // 2.1.0: Wer das Album gar nicht sehen darf, darf auch nicht dagegen
+  // PIN-raten (bisher prüfte der Endpoint nur die PIN selbst).
+  if (!canViewAlbum(db, req.session.userId, req.params.id)) return res.status(403).json({ error: 'No access to album' });
   const root = hiddenRootFor(db, req.params.id);
   if (!root) return res.json({ success: true }); // not hidden
   const rootAlbum = db.albums.find(a => a.id === root);
@@ -1138,7 +1354,7 @@ app.put('/api/albums/:id/cover', requireAuth, (req, res) => {
   if (!album) return res.status(404).json({ error: 'Album not found' });
   if (!canManageAlbum(db, req.session.userId, req.params.id)) return res.status(403).json({ error: 'No permission' });
   if (photoId) {
-    const photo = db.photos.find(p => p.id === photoId);
+    const photo = findPhoto(db, photoId);
     if (!photo) return res.status(404).json({ error: 'Photo not found' });
     const valid = [req.params.id, ...descendantAlbumIds(db, req.params.id)];
     if (!valid.includes(photo.albumId)) return res.status(400).json({ error: 'Photo is not in this album' });
@@ -1169,21 +1385,27 @@ app.delete('/api/albums/:id', requireAuth, (req, res) => {
 // Verarbeitet eine empfangene Datei (Buffer im RAM) vollständig:
 // Video → chunked vmr1 + ffmpeg-Poster, Bild → GCM + sharp-Thumbnail.
 // Wird vom klassischen Upload UND vom Chunked-Upload-Finish genutzt.
+// Rückgabe: der neue Datensatz ODER `{ duplicate: true }`, wenn derselbe Nutzer
+// diese Datei bereits abgelegt hat (Fingerabdruck über den Klartext, 2.5.0).
 async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
   const isVideo = file.mimetype.startsWith('video/');
+  const hash = contentHash(file.buffer);
+  const dup = db.photos.find(p => isAlive(p) && p.ownerId === ownerId && p.hash === hash);
+  if (dup) return { duplicate: true, existingId: dup.id };
   const photoId = uid();
   const rec = { id: photoId, albumId, ownerId,
     originalName: file.originalname, mimeType: file.mimetype, size: file.size, uploadedAt: Date.now(),
-    encryption: enc,
+    encryption: enc, hash,
     shared: false, views: 0, downloads: 0, viewLog: [] };
   if (isVideo) {
     const ec = encryptChunked(file.buffer, key, photoId);
     fs.writeFileSync(path.join(PHOTOS_DIR, `${photoId}.enc`), ec.data);
     rec.encFormat = 'chunked'; rec.chunkSize = CHUNK_SIZE;
     rec.chunkCount = ec.chunkCount; rec.plainSize = ec.plainSize;
-    const poster = extractVideoPoster(file.buffer, getSettings(db).thumbSize);
-    if (poster) {
-      const e2 = encryptGCM(poster, key);
+    const meta = extractVideoMeta(file.buffer, getSettings(db).thumbSize);
+    if (meta.takenAt) rec.takenAt = meta.takenAt;
+    if (meta.poster) {
+      const e2 = encryptGCM(meta.poster, key);
       fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
       rec.thumbIv = e2.iv; rec.thumbTag = e2.tag;
     }
@@ -1192,6 +1414,14 @@ async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
     fs.writeFileSync(path.join(PHOTOS_DIR, `${photoId}.enc`), e1.data);
     rec.iv = e1.iv; rec.tag = e1.tag;
     const ts = getSettings(db).thumbSize;
+    // Aufnahmezeit aus EXIF (2.5.0) – dient als Vorsortierung beim Import und
+    // als Grundlage für "Nach Aufnahmedatum sortieren". Schlägt das Lesen fehl,
+    // bleibt es einfach beim Upload-Zeitpunkt.
+    try {
+      const md = await sharp(file.buffer).metadata();
+      const taken = parseExifDateTime(md && md.exif);
+      if (taken) rec.takenAt = taken;
+    } catch {}
     const thumbBuffer = await sharp(file.buffer).resize(ts, ts, { fit: 'cover', position: 'centre' }).jpeg({ quality: 75 }).toBuffer();
     const e2 = encryptGCM(thumbBuffer, key);
     fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
@@ -1220,16 +1450,17 @@ app.post('/api/photos/upload', requireAuth, requireDEK, (req, res) => {
     if (!fam && albumIsFamilyGranted(db, albumId)) { const me = getUser(db, req); fam = ensureFamilyKey(db, me, dek); if (fam) familyCache.set(req.sessionID, fam); }
     const { key, enc } = uploadKeyFor(db, albumId, dek, fam);
 
-    const uploaded = [], errors = [];
+    const uploaded = [], errors = [], duplicates = [];
     for (const file of req.files) {
       try {
         const rec = await storeIncomingFile(db, file, albumId, req.session.userId, key, enc);
+        if (rec.duplicate) { duplicates.push(file.originalname); file.buffer = null; continue; }
         db.photos.push(rec);
         uploaded.push({ id: rec.id, name: file.originalname });
         file.buffer = null;
       } catch (e) { console.error('Upload error', file.originalname, e.message); errors.push(file.originalname); }
     }
-    saveDB(db); res.json({ uploaded, errors });
+    saveDB(db); res.json({ uploaded, errors, duplicates });
   });
 });
 
@@ -1344,10 +1575,14 @@ app.post('/api/photos/upload-finish', requireAuth, requireDEK, async (req, res) 
     const buffer = fs.readFileSync(u.path);
     if (buffer.length !== u.size) { cleanupPending(uploadId); return res.status(400).json({ error: 'Assembled size mismatch' }); }
     const rec = await storeIncomingFile(db, { buffer, originalname: u.fileName, mimetype: u.mimeType, size: u.size }, u.albumId, req.session.userId, key, enc);
+    if (rec.duplicate) {
+      cleanupPending(uploadId);
+      return res.json({ uploaded: [], errors: [], duplicates: [u.fileName] });
+    }
     db.photos.push(rec);
     saveDB(db);
     cleanupPending(uploadId);
-    res.json({ uploaded: [{ id: rec.id, name: u.fileName }], errors: [] });
+    res.json({ uploaded: [{ id: rec.id, name: u.fileName }], errors: [], duplicates: [] });
   } catch (e) {
     console.error('Chunked upload finish error', u.fileName, e.message);
     cleanupPending(uploadId);
@@ -1363,30 +1598,130 @@ app.post('/api/photos/upload-cancel', requireAuth, (req, res) => {
 });
 
 // ═══ SHARE / UNSHARE ══════════════════════════════════════════════
+// Aufbereitung eines Fotos für das Frontend (seit 2.5.0 ausgelagert, weil die
+// Favoritenliste dieselbe Form braucht). `albumId` = der Kontext, in dem gelistet
+// wird (bestimmt nur das linkedHere-Badge).
+function mapPhoto(db, me, req, p, albumId) {
+  const owner = db.users.find(u => u.id === p.ownerId);
+  const keyInfo = resolveReadKey(db, p, req);
+  // Kein linkedHere für Beobachter und verknüpfte Hauptbenutzer: das Link-Badge
+  // ist für sie nutzlos und verriete nur die Album-Organisation des Besitzers
+  // (keine Link-Verwaltung, kein "Folgen") und verrät nur Album-Organisation.
+  const isOwn = p.ownerId === req.session.userId;
+  return { id: p.id, albumId: p.albumId, linkedHere: (isOwn || me.type === 'admin') && p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, takenAt: p.takenAt || null, size: p.size,
+    ownerId: p.ownerId, ownerName: owner?.username ?? '?', shared: p.shared || false,
+    mimeType: p.mimeType || 'image/jpeg',
+    streamable: p.encFormat === 'chunked',
+    hasThumb: !!p.thumbIv,
+    pending: !!keyInfo.pending,
+    favorite: !!p.favorite,                                    // 2.5.0
+    canFavorite: isOwn && me.type !== 'observer',               // 2.5.0
+    canDownload: isOwn && me.type !== 'observer',
+    canShare: isOwn && me.type !== 'observer' };
+}
+
 app.get('/api/albums/:albumId/photos', requireAuth, (req, res) => {
   const db = loadDB();
   const me = getUser(db, req);
   const albumId = req.params.albumId;
-  const mapPhoto = p => {
-    const owner = db.users.find(u => u.id === p.ownerId);
-    const keyInfo = resolveReadKey(db, p, req);
-    // Kein linkedHere für Beobachter und verknüpfte Hauptbenutzer: das Link-Badge
-    // ist für sie nutzlos und verriete nur die Album-Organisation des Besitzers
-    // (keine Link-Verwaltung, kein "Folgen") und verrät nur Album-Organisation.
-    return { id: p.id, albumId: p.albumId, linkedHere: (p.ownerId === req.session.userId || me.type === 'admin') && p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, size: p.size,
-      ownerId: p.ownerId, ownerName: owner?.username ?? '?', shared: p.shared || false,
-      mimeType: p.mimeType || 'image/jpeg',
-      streamable: p.encFormat === 'chunked',
-      hasThumb: !!p.thumbIv,
-      pending: !!keyInfo.pending,
-      canDownload: p.ownerId === req.session.userId && me.type !== 'observer',
-      canShare: p.ownerId === req.session.userId && me.type !== 'observer' };
-  };
   if (albumId === SHARED_ALBUM_ID) return res.status(403).json({ error: 'Sharing removed' });
   if (!canViewAlbum(db, req.session.userId, albumId)) return res.status(403).json({ error: 'No access to album' });
   if (effectiveHidden(db, albumId) && !isUnlocked(req, db, albumId))
     return res.status(423).json({ error: 'Album locked', code: 'LOCKED' });
-  res.json(db.photos.filter(p => photoInAlbum(p, albumId)).map(mapPhoto).sort((a, b) => b.uploadedAt - a.uploadedAt));
+  // 2.1.0: Ein Foto, dessen Home-Album für den Betrachter unsichtbar ist (z. B.
+  // verstecktes Album ohne das Recht dazu), wird auch dann nicht gelistet, wenn
+  // es hierher verlinkt ist – sonst erschiene eine Kachel, deren Thumb/Full/Stream
+  // konsequenterweise 403 liefert. Alle Zugriffsprüfungen gehen auf `p.albumId`.
+  const visible = new Set(visibleAlbumIds(db, req.session.userId));
+  const mayShow = p => (p.shared && me.type !== 'observer') || visible.has(p.albumId);
+  // 2.5.0: Reihenfolge kommt aus dem Album (manuell) oder bleibt "neueste zuerst".
+  const album = db.albums.find(a => a.id === albumId);
+  const list = sortPhotosForAlbum(album, photosOfAlbum(db, albumId).filter(mayShow));
+  res.json(list.map(p => mapPhoto(db, me, req, p, albumId)));
+});
+
+// ─── Manuelle Reihenfolge (2.5.0) ─────────────────────────────────
+// Ein Foto an eine Position schieben. `afterId: null` = an den Anfang.
+// Beim ersten Aufruf wird die aktuell angezeigte Reihenfolge materialisiert,
+// damit nichts springt; danach ist `album.photoOrder` maßgeblich.
+app.put('/api/albums/:id/order', requireAuth, (req, res) => {
+  const { photoId, afterId } = req.body || {};
+  const db = loadDB();
+  const album = db.albums.find(a => a.id === req.params.id);
+  if (!album) return res.status(404).json({ error: 'Album not found' });
+  if (!canManageAlbum(db, req.session.userId, album.id)) return res.status(403).json({ error: 'No permission' });
+  if (effectiveHidden(db, album.id) && !isUnlocked(req, db, album.id))
+    return res.status(423).json({ error: 'Album locked', code: 'LOCKED' });
+  const ids = sortPhotosForAlbum(album, photosOfAlbum(db, album.id)).map(p => p.id);
+  if (!ids.includes(photoId)) return res.status(404).json({ error: 'Photo not in this album' });
+  if (afterId !== null && afterId !== undefined && !ids.includes(afterId))
+    return res.status(400).json({ error: 'Anchor photo not in this album' });
+  if (afterId === photoId) return res.json({ success: true, order: ids });
+  const without = ids.filter(id => id !== photoId);
+  const at = (afterId === null || afterId === undefined) ? 0 : without.indexOf(afterId) + 1;
+  without.splice(at, 0, photoId);
+  album.photoOrder = without;
+  saveDB(db);
+  res.json({ success: true, order: without });
+});
+
+// Einmalige Vorsortierung – u. a. nach der beim Import gelesenen Aufnahmezeit.
+app.post('/api/albums/:id/order/sort', requireAuth, (req, res) => {
+  const by = (req.body || {}).by === 'uploaded' ? 'uploaded' : 'taken';
+  const desc = !!(req.body || {}).desc;
+  const db = loadDB();
+  const album = db.albums.find(a => a.id === req.params.id);
+  if (!album) return res.status(404).json({ error: 'Album not found' });
+  if (!canManageAlbum(db, req.session.userId, album.id)) return res.status(403).json({ error: 'No permission' });
+  if (effectiveHidden(db, album.id) && !isUnlocked(req, db, album.id))
+    return res.status(423).json({ error: 'Album locked', code: 'LOCKED' });
+  const keyOf = p => (by === 'taken' ? (p.takenAt || p.uploadedAt) : p.uploadedAt);
+  const ids = photosOfAlbum(db, album.id).sort((a, b) => desc ? keyOf(b) - keyOf(a) : keyOf(a) - keyOf(b)).map(p => p.id);
+  album.photoOrder = ids;
+  saveDB(db);
+  res.json({ success: true, count: ids.length });
+});
+
+// Zurück zur Standardsortierung (neueste zuerst)
+app.delete('/api/albums/:id/order', requireAuth, (req, res) => {
+  const db = loadDB();
+  const album = db.albums.find(a => a.id === req.params.id);
+  if (!album) return res.status(404).json({ error: 'Album not found' });
+  if (!canManageAlbum(db, req.session.userId, album.id)) return res.status(403).json({ error: 'No permission' });
+  delete album.photoOrder;
+  saveDB(db);
+  res.json({ success: true });
+});
+
+// ─── Favoriten (2.5.0) ────────────────────────────────────────────
+// Bewusst eine Eigenschaft des Fotos, gesetzt nur vom Besitzer: das kommt ohne
+// zusätzliche Tabelle aus. Beobachter sehen weder Stern noch Favoritenalbum.
+app.put('/api/photos/:id/favorite', requireAuth, (req, res) => {
+  if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
+  const db = loadDB();
+  const photo = findPhoto(db, req.params.id);
+  if (!photo) return res.status(404).json({ error: 'Photo not found' });
+  const me = getUser(db, req);
+  if (me.type === 'observer' || photo.ownerId !== req.session.userId)
+    return res.status(403).json({ error: 'Not your photo' });
+  if ((req.body || {}).favorite) photo.favorite = true; else delete photo.favorite;
+  saveDB(db);
+  res.json({ success: true, favorite: !!photo.favorite });
+});
+
+// Virtuelles Album: die eigenen Favoriten, neueste zuerst.
+app.get('/api/photos/favorites', requireAuth, (req, res) => {
+  const db = loadDB();
+  const me = getUser(db, req);
+  if (me.type === 'observer') return res.status(403).json({ error: 'Observers have no favorites' });
+  const visible = new Set(visibleAlbumIds(db, req.session.userId));
+  const list = db.photos.filter(p => isAlive(p) && p.favorite && p.ownerId === me.id && visible.has(p.albumId))
+    // Fotos in gesperrten versteckten Alben bleiben draußen, solange die PIN
+    // in dieser Sitzung nicht eingegeben wurde.
+    .filter(p => !effectiveHidden(db, p.albumId) || isUnlocked(req, db, p.albumId))
+    .sort((a, b) => b.uploadedAt - a.uploadedAt);
+  // albumId = eigenes Home-Album → kein irreführendes Link-Badge in der Favoritensicht
+  res.json(list.map(p => mapPhoto(db, me, req, p, p.albumId)));
 });
 
 // Link one photo into multiple albums (Variant A: same key context only)
@@ -1395,7 +1730,7 @@ app.put('/api/photos/:id/links', requireAuth, (req, res) => {
   const { albumIds } = req.body;
   if (!Array.isArray(albumIds)) return res.status(400).json({ error: 'albumIds array required' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   const me = getUser(db, req);
   if (photo.ownerId !== req.session.userId && me.type !== 'admin') return res.status(403).json({ error: 'Not your photo' });
@@ -1425,7 +1760,7 @@ app.put('/api/photos/links', requireAuth, (req, res) => {
   const targetCtx = albumKeyContext(db, targetAlbumId);
   let linked = 0, skipped = 0;
   for (const pid of photoIds) {
-    const photo = db.photos.find(p => p.id === pid);
+    const photo = findPhoto(db, pid);
     if (!photo) { skipped++; continue; }
     if (photo.ownerId !== req.session.userId && me.type !== 'admin') { skipped++; continue; }
     if (photo.albumId === targetAlbumId) { skipped++; continue; }
@@ -1442,7 +1777,7 @@ app.put('/api/photos/links', requireAuth, (req, res) => {
 app.delete('/api/photos/:id/links/:albumId', requireAuth, (req, res) => {
   if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   const me = getUser(db, req);
   if (photo.ownerId !== req.session.userId && me.type !== 'admin') return res.status(403).json({ error: 'Not your photo' });
@@ -1455,7 +1790,7 @@ app.put('/api/photos/:id/move', requireAuth, (req, res) => {
   const { targetAlbumId } = req.body;
   if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   const me = getUser(db, req);
   if (photo.ownerId !== req.session.userId && me.type !== 'admin') return res.status(403).json({ error: 'Not your photo' });
@@ -1499,7 +1834,7 @@ app.put('/api/photos/:id/move', requireAuth, (req, res) => {
 app.get('/api/photos/:id/thumb', requireAuth, (req, res) => {
   if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   const me = getUser(db, req);
   const canView = (photo.shared && me.type !== 'observer') || canViewAlbum(db, req.session.userId, photo.albumId);
@@ -1531,7 +1866,7 @@ app.get('/api/photos/:id/thumb', requireAuth, (req, res) => {
 app.get('/api/photos/:id/stream', requireAuth, (req, res) => {
   if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Not found' });
   const me = getUser(db, req);
   const canView = (photo.shared && me.type !== 'observer') || canViewAlbum(db, req.session.userId, photo.albumId);
@@ -1598,7 +1933,7 @@ app.get('/api/photos/:id/stream', requireAuth, (req, res) => {
 app.post('/api/photos/:id/view', requireAuth, (req, res) => {
   if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Not found' });
   const me = getUser(db, req);
   const canView = (photo.shared && me.type !== 'observer') || canViewAlbum(db, req.session.userId, photo.albumId);
@@ -1613,7 +1948,7 @@ app.post('/api/photos/:id/view', requireAuth, (req, res) => {
 app.get('/api/photos/:id/full', requireAuth, (req, res) => {
   if (!ID_RE.test(req.params.id)) return res.status(400).json({ error: 'Invalid id' });
   const db = loadDB();
-  const photo = db.photos.find(p => p.id === req.params.id);
+  const photo = findPhoto(db, req.params.id);
   if (!photo) return res.status(404).json({ error: 'Photo not found' });
   const me = getUser(db, req);
   const canView = (photo.shared && me.type !== 'observer') || canViewAlbum(db, req.session.userId, photo.albumId);
@@ -1642,17 +1977,39 @@ app.get('/api/photos/:id/full', requireAuth, (req, res) => {
   } catch (e) { console.error('Full view error:', e.message); res.status(500).json({ error: 'Decryption failed' }); }
 });
 
+// 2.5.0: Löschen markiert zunächst nur. Die Dateien verschwinden erst, wenn der
+// Janitor nach PHOTO_TRASH_TTL aufräumt – bis dahin ist /restore möglich.
 app.delete('/api/photos/:id', requireAuth, (req, res) => {
   const db = loadDB();
-  const idx = db.photos.findIndex(p => p.id === req.params.id);
-  if (idx === -1) return res.status(404).json({ error: 'Photo not found' });
-  const photo = db.photos[idx];
+  const photo = findPhoto(db, req.params.id);
+  if (!photo) return res.status(404).json({ error: 'Photo not found' });
   const me = getUser(db, req);
   if ((photo.ownerId !== req.session.userId && me.type !== 'admin') || me.type === 'observer')
     return res.status(403).json({ error: 'No permission' });
-  [path.join(PHOTOS_DIR, `${photo.id}.enc`), path.join(THUMBS_DIR, `${photo.id}.enc`)].forEach(f => { try { fs.unlinkSync(f); } catch {} });
-  db.albums.forEach(a => { if (a.coverPhotoId === photo.id) delete a.coverPhotoId; });
-  db.photos.splice(idx, 1); saveDB(db); res.json({ success: true });
+  photo.deletedAt = Date.now();
+  saveDB(db);
+  res.json({ success: true, undoMs: PHOTO_TRASH_TTL });
+});
+
+// Rückgängig: stellt eben gelöschte Fotos wieder her, solange sie noch im
+// Papierkorb liegen. Bewusst als Sammelaufruf, weil im Frontend meist eine
+// ganze Auswahl auf einmal gelöscht wird.
+app.post('/api/photos/restore', requireAuth, (req, res) => {
+  const ids = Array.isArray((req.body || {}).photoIds) ? req.body.photoIds : [];
+  if (!ids.length) return res.status(400).json({ error: 'photoIds required' });
+  const db = loadDB();
+  const me = getUser(db, req);
+  if (me.type === 'observer') return res.status(403).json({ error: 'No permission' });
+  let restored = 0;
+  for (const id of ids) {
+    const p = db.photos.find(x => x.id === id && x.deletedAt);
+    if (!p) continue;
+    if (p.ownerId !== req.session.userId && me.type !== 'admin') continue;
+    delete p.deletedAt;
+    restored++;
+  }
+  if (restored) saveDB(db);
+  res.json({ success: true, restored });
 });
 
 // ═══ EXPORT (all own photos as ZIP) ═══════════════════════════════
@@ -1662,7 +2019,7 @@ app.get('/api/export', requireAuth, requireDEK, (req, res) => {
   if (me.type === 'observer') return res.status(403).json({ error: 'Observers cannot export' });
   const dek = dekCache.get(req.sessionID);
   const fam = familyCache.get(req.sessionID);
-  const mine = db.photos.filter(p => p.ownerId === req.session.userId);
+  const mine = db.photos.filter(p => isAlive(p) && p.ownerId === req.session.userId);
 
   res.set('Content-Type', 'application/zip');
   res.set('Content-Disposition', `attachment; filename="vermeer-export-${me.username}-${new Date().toISOString().slice(0,10)}.zip"`);
@@ -1724,10 +2081,11 @@ app.get('/api/stats', requireMainUser, (req, res) => {
   const meU = getUser(fullDb, req);
   const isAdmin = meU.type === 'admin';
   // Scope: main users see only their own photos/albums; admin sees everything
-  const db = isAdmin ? fullDb : {
+  // 2.5.0: Fotos im Papierkorb fließen nicht in die Statistik ein.
+  const db = {
     users: fullDb.users,
-    albums: fullDb.albums.filter(a => a.ownerId === meU.id),
-    photos: fullDb.photos.filter(p => p.ownerId === meU.id)
+    albums: isAdmin ? fullDb.albums : fullDb.albums.filter(a => a.ownerId === meU.id),
+    photos: fullDb.photos.filter(p => isAlive(p) && (isAdmin || p.ownerId === meU.id))
   };
   const overview = {
     totalPhotos: db.photos.length, totalAlbums: db.albums.length,
@@ -1738,6 +2096,20 @@ app.get('/api/stats', requireMainUser, (req, res) => {
     totalStorageMB: parseFloat((db.photos.reduce((s, p) => s + (p.size || 0), 0) / 1048576).toFixed(2)),
     appVersion: APP_VERSION
   };
+  // Belegung des Datenträgers (2.5.0) – nur für Admins, da systemweite Angabe.
+  // Eine volle Platte ist auf Raspberry-Hardware mit Videos kein Randfall und
+  // trifft als Erstes das Schreiben der db.json.
+  if (isAdmin) {
+    try {
+      const st = fs.statfsSync(DATA_DIR);
+      const total = st.blocks * st.bsize, free = st.bavail * st.bsize;
+      if (total > 0) overview.disk = {
+        totalGB: parseFloat((total / 1073741824).toFixed(1)),
+        freeGB: parseFloat((free / 1073741824).toFixed(1)),
+        usedPct: Math.round((total - free) / total * 100)
+      };
+    } catch (e) { console.warn('statfs unavailable:', e.message); }
+  }
   const nameOf = id => db.users.find(u => u.id === id)?.username ?? '?';
   const topPhotos = db.photos.filter(p => p.views > 0).sort((a, b) => b.views - a.views).slice(0, 10).map(p => {
     // viewers: most-recent-first, de-duplicated by user, with last-view timestamp
@@ -1835,6 +2207,59 @@ app.put('/api/settings', requireAdmin, (req, res) => {
   saveDB(db);
   res.json(db.settings);
 });
+
+// ─── PWA-Manifest (2.5.0) ─────────────────────────────────────────
+// Erlaubt "Zum Startbildschirm hinzufügen" – die Galerie startet dann ohne
+// Browserleiste. BEWUSST OHNE SERVICE WORKER: ein Worker würde genau das
+// Cache-Problem zurückbringen, das die no-store-Regel für index.html löst.
+// Name und Farben kommen aus den Galerie-Einstellungen.
+app.get('/manifest.webmanifest', (req, res) => {
+  const s = getSettings(loadDB());
+  res.set('Cache-Control', 'no-store');
+  res.type('application/manifest+json').json({
+    name: s.galleryName,
+    short_name: s.galleryName.slice(0, 12),
+    start_url: './',
+    scope: './',
+    display: 'standalone',
+    orientation: 'any',
+    background_color: s.colors.bg,
+    theme_color: s.colors.bg,
+    icons: [
+      { src: 'icon-192.png', sizes: '192x192', type: 'image/png', purpose: 'any' },
+      { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
+      { src: 'icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
+    ]
+  });
+});
+// Icons werden aus den konfigurierten Farben gerendert und im RAM gepuffert.
+const iconCache = new Map();
+function appIconSvg(size, colors) {
+  const c = size / 2, r = size * 0.3;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <rect width="${size}" height="${size}" rx="${size * 0.18}" fill="${colors.bg}"/>
+    <circle cx="${c}" cy="${c}" r="${r}" fill="none" stroke="${colors.accent}" stroke-width="${size * 0.045}"/>
+    <path d="M${c - r * 0.55} ${c - r * 0.5} L${c} ${c + r * 0.62} L${c + r * 0.55} ${c - r * 0.5}"
+      fill="none" stroke="${colors.accent}" stroke-width="${size * 0.075}" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+}
+function serveIcon(size) {
+  return async (req, res) => {
+    try {
+      const colors = getSettings(loadDB()).colors;
+      const key = `${size}:${colors.bg}:${colors.accent}`;
+      let png = iconCache.get(key);
+      if (!png) {
+        png = await sharp(Buffer.from(appIconSvg(size, colors))).png().toBuffer();
+        if (iconCache.size > 12) iconCache.clear();
+        iconCache.set(key, png);
+      }
+      res.type('image/png').set('Cache-Control', 'public, max-age=3600').send(png);
+    } catch (e) { console.error('Icon render failed:', e.message); res.status(500).end(); }
+  };
+}
+app.get('/icon-192.png', serveIcon(192));
+app.get('/icon-512.png', serveIcon(512));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: APP_VERSION }));
 app.use((err, req, res, next) => {

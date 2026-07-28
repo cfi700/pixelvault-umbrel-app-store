@@ -3,6 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<!-- PWA (2.5.0): "Zum Startbildschirm hinzufügen" ohne Browserleiste.
+     Bewusst OHNE Service Worker – sonst käme das Cache-Problem zurück. -->
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0d0d0f">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="icon-512.png">
 <title>Vermeer</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600&display=swap');
@@ -336,6 +345,30 @@
   .is-video::after{content:'▶';position:absolute;right:6px;bottom:6px;z-index:2;background:rgba(0,0,0,.65);
     color:#fff;border-radius:999px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;
     font-size:11px;padding-left:2px;backdrop-filter:blur(2px)}
+
+  /* ── 2.5.0: Favoriten, Positionswechsel, Undo ── */
+  .fav-badge{position:absolute;top:6px;right:6px;z-index:2;font-size:14px;line-height:1;
+    text-shadow:0 1px 4px rgba(0,0,0,.9);pointer-events:none}
+  .lb-icon-btn{background:none;border:none;color:var(--text);font-size:19px;cursor:pointer;
+    padding:2px 6px;line-height:1;opacity:.75;transition:opacity .15s}
+  .lb-icon-btn:hover{opacity:1}
+  .lb-icon-btn.active{opacity:1;color:var(--accent)}
+  /* Positionswechsel (2.5.0): bewusst KEIN Drag & Drop – das ist auf dem Handy
+     unbrauchbar und kollidiert mit der Swipe-Navigation. Stattdessen: Foto
+     markieren, dann die Zielkachel antippen. Zwei Taps, kein Ziehen. */
+  .reorder-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:0 0 12px;
+    padding:10px 12px;border:1px dashed var(--accent);border-radius:10px;background:var(--surface)}
+  .reorder-bar .rb-text{font-size:13px;color:var(--muted);flex:1;min-width:180px}
+  .photo-grid.reordering .photo-card{opacity:.5;cursor:pointer;transition:opacity .15s}
+  .photo-grid.reordering .photo-card:hover{opacity:.9;outline:2px dashed var(--accent);outline-offset:2px}
+  .photo-grid.reordering .photo-check{display:none}
+  .photo-grid.reordering .photo-card.rb-moving{opacity:1;cursor:default;
+    outline:2px solid var(--accent);outline-offset:2px}
+  .photo-grid.reordering .photo-card.rb-moving:hover{outline-style:solid}
+  #toast .toast-undo{margin-left:12px;background:none;border:1px solid currentColor;color:inherit;
+    border-radius:6px;padding:2px 9px;font:inherit;font-size:12px;cursor:pointer}
+  .disk-warn{margin:0 16px 14px;padding:9px 12px;border-radius:8px;font-size:13px;
+    background:rgba(192,83,74,.14);border:1px solid var(--danger);color:var(--text)}
 
 
   /* ── TILE VIEW (v1.0.0) ── */
@@ -689,6 +722,8 @@
   <div class="lb-topbar">
     <span class="lb-title" id="lb-title"></span>
     <span class="lb-counter" id="lb-counter"></span>
+    <button class="lb-icon-btn" id="lb-fav" onclick="toggleFavCurrent()" style="display:none">☆</button>
+    <button class="lb-icon-btn" id="lb-slideshow" onclick="toggleSlideshow()">▶</button>
     <button class="lb-close" onclick="closeLightbox()">✕</button>
   </div>
   <div class="lb-img-wrap">
@@ -700,6 +735,21 @@
     <button class="lb-arrow right" id="lb-next" onclick="lbNavigate(1)">&#8250;</button>
   </div>
   <div class="lb-strip" id="lb-strip"></div>
+</div>
+
+<!-- MODAL: Sortierung (2.5.0) -->
+<div class="modal-backdrop" id="modal-sort">
+  <div class="modal">
+    <h2 data-i18n="order.title"></h2>
+    <div style="display:flex;flex-direction:column;gap:8px;margin:14px 0">
+      <button class="btn btn-ghost" onclick="applyAlbumSort('taken')" data-i18n="order.by_taken"></button>
+      <button class="btn btn-ghost" onclick="applyAlbumSort('default')" data-i18n="order.default"></button>
+    </div>
+    <p style="font-size:12px;color:var(--muted);line-height:1.5" data-i18n="order.hint"></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" onclick="closeModal('modal-sort')" data-i18n="btn.cancel"></button>
+    </div>
+  </div>
 </div>
 
 <!-- MODAL: New/Edit Album -->
@@ -861,6 +911,11 @@
       <strong id="obsalbums-name" style="color:var(--text)"></strong> <span data-i18n="obs.albums_desc"></span>
     </p>
     <div class="perm-tree" id="obs-album-tree"></div>
+    <label class="perm-album-item" style="margin-top:14px">
+      <input type="checkbox" id="obs-see-hidden">
+      <span data-i18n="obs.see_hidden"></span>
+    </label>
+    <p style="color:var(--muted);font-size:12px;margin-top:8px" data-i18n="obs.see_hidden_hint"></p>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModal('modal-obs-albums')" data-i18n="btn.cancel"></button>
       <button class="btn btn-primary" onclick="saveObserverAlbums()" data-i18n="btn.save"></button>
@@ -1070,6 +1125,23 @@ const T = {
     'link.count':(n)=>`${n} Foto${n!==1?'s':''} ausgewählt – in welche Alben verlinken?`,
     'link.done':(n)=>`${n} Verlinkung${n!==1?'en':''} erstellt`,'link.skipped':'übersprungen',
     'link.removed':'Verlinkung entfernt','link.done_removed':(n)=>`${n} Verlinkung${n!==1?'en':''} entfernt`,'link.badge_title':'Verlinkt – Original liegt in einem anderen Album',
+    'fav.album':'Favoriten','fav.tile_meta':(n)=>`${n} Favorit${n!==1?'en':''}`,
+    'fav.empty':'Noch keine Favoriten. Tippe in der Großansicht auf den Stern.',
+    'fav.add':'Zu Favoriten hinzufügen','fav.remove':'Aus Favoriten entfernen',
+    'fav.added':'Zu den Favoriten hinzugefügt','fav.removed':'Aus den Favoriten entfernt',
+    'slideshow.start':'Diashow starten','slideshow.stop':'Diashow anhalten',
+    'order.btn':'⇅ Sortierung','order.title':'Sortierung dieses Albums',
+    'order.default':'Neueste zuerst (Standard)',
+    'order.by_taken':'Nach Aufnahmedatum sortieren',
+    'order.hint':'»Nach Aufnahmedatum« ordnet einmalig nach der beim Import gelesenen Aufnahmezeit; fehlt sie, zählt der Upload-Zeitpunkt. Danach bleibt die Reihenfolge fest, bis du sie änderst.',
+    'order.move_btn':'↔ Position','order.to_start':'An den Anfang','order.cancel':'Abbrechen',
+    'order.prompt':(n)=>`»${n}« verschieben: tippe auf das Foto, hinter das es rutschen soll.`,
+    'order.done':'Position geändert','order.sorted':'Nach Aufnahmedatum sortiert',
+    'order.reset_done':'Zurück auf »neueste zuerst«','order.manual_badge':'manuell sortiert',
+    'upload.duplicates':(n)=>`${n} Duplikat(e) übersprungen`,
+    'undo.btn':'Rückgängig','undo.restored':(n)=>`${n} Foto${n!==1?'s':''} wiederhergestellt`,
+    'undo.expired':'Rückgängig nicht mehr möglich',
+    'stats.disk':'Platte frei','stats.disk_warn':(p)=>`⚠ Der Datenträger ist zu ${p}% belegt. Bei einer vollen Platte können keine Fotos und keine Datenbankänderungen mehr gespeichert werden.`,
     'link.remove_btn':'🔗 Aus diesem Album entfernen',
     'move.title':'Fotos verschieben','move.confirm':'Hierher verschieben',
     'move.count':(n)=>`${n} Foto${n!==1?'s':''} ausgewählt – Zielalbum wählen:`,
@@ -1082,6 +1154,8 @@ const T = {
     'obs.col.albums':'Freigegebene Alben','obs.col.lastvisit':'Letzter Besuch','obs.never':'Noch nie','obs.new_title':'Neuen Beobachter anlegen',
     'obs.new_info':'Der Beobachter muss beim ersten Login ein eigenes Passwort setzen. Danach kann er die von dir freigegebenen Alben ansehen.',
     'obs.albums_title':'Alben freigeben','obs.albums_desc':'darf folgende deiner Alben ansehen:',
+    'obs.see_hidden':'Darf versteckte Alben sehen',
+    'obs.see_hidden_hint':'Ohne dieses Recht bleiben versteckte Alben (🕶) samt Unteralben und Fotos für diese Person komplett unsichtbar – auch wenn sie oben freigegeben sind. Mit dem Recht erscheinen sie, bleiben aber durch die PIN gesperrt.',
     'obs.created':'Beobachter angelegt','obs.deleted':'Beobachter gelöscht',
     'obs.confirm_delete':'Beobachter wirklich löschen?',
     'obs.albums_count':(n)=>`${n} Album${n!==1?'en':''}`,
@@ -1246,6 +1320,23 @@ const T = {
     'link.count':(n)=>`${n} photo${n!==1?'s':''} selected – link into which albums?`,
     'link.done':(n)=>`${n} link${n!==1?'s':''} created`,'link.skipped':'skipped',
     'link.removed':'Link removed','link.done_removed':(n)=>`${n} link${n!==1?'s':''} removed`,'link.badge_title':'Linked – original is in another album',
+    'fav.album':'Favourites','fav.tile_meta':(n)=>`${n} favourite${n!==1?'s':''}`,
+    'fav.empty':'No favourites yet. Tap the star in the large view.',
+    'fav.add':'Add to favourites','fav.remove':'Remove from favourites',
+    'fav.added':'Added to favourites','fav.removed':'Removed from favourites',
+    'slideshow.start':'Start slideshow','slideshow.stop':'Stop slideshow',
+    'order.btn':'⇅ Sort order','order.title':'Sort order of this album',
+    'order.default':'Newest first (default)',
+    'order.by_taken':'Sort by capture date',
+    'order.hint':'"Sort by capture date" applies the capture time read during import once; where it is missing, the upload time is used. After that the order stays fixed until you change it.',
+    'order.move_btn':'↔ Position','order.to_start':'Move to start','order.cancel':'Cancel',
+    'order.prompt':(n)=>`Moving "${n}": tap the photo it should go behind.`,
+    'order.done':'Position changed','order.sorted':'Sorted by capture date',
+    'order.reset_done':'Back to "newest first"','order.manual_badge':'manually sorted',
+    'upload.duplicates':(n)=>`${n} duplicate(s) skipped`,
+    'undo.btn':'Undo','undo.restored':(n)=>`${n} photo${n!==1?'s':''} restored`,
+    'undo.expired':'Undo no longer possible',
+    'stats.disk':'Disk free','stats.disk_warn':(p)=>`⚠ The disk is ${p}% full. Once it is full, neither photos nor database changes can be saved.`,
     'link.remove_btn':'🔗 Remove from this album',
     'move.title':'Move Photos','move.confirm':'Move here',
     'move.count':(n)=>`${n} photo${n!==1?'s':''} selected – choose target album:`,
@@ -1258,6 +1349,8 @@ const T = {
     'obs.col.albums':'Granted Albums','obs.col.lastvisit':'Last Visit','obs.never':'Never','obs.new_title':'Create New Observer',
     'obs.new_info':'The observer must set their own password at first login. Afterwards they can view the albums you grant.',
     'obs.albums_title':'Grant Albums','obs.albums_desc':'may view these albums of yours:',
+    'obs.see_hidden':'May see hidden albums',
+    'obs.see_hidden_hint':'Without this right, hidden albums (🕶) including their sub-albums and photos stay completely invisible to this person – even if granted above. With the right they appear but remain locked by the PIN.',
     'obs.created':'Observer created','obs.deleted':'Observer deleted',
     'obs.confirm_delete':'Really delete this observer?',
     'obs.albums_count':(n)=>`${n} album${n!==1?'s':''}`,
@@ -1324,6 +1417,11 @@ let albumPermTargetId=null,resetTargetId=null;
 let albumModalMode=null,albumModalParentId=null,albumModalEditId=null;
 // Lightbox state
 let lbPhotos=[],lbIndex=0,lbThumbUrls={};
+// 2.5.0: virtuelles Favoritenalbum, Positionswechsel, Diashow
+const FAV_ID='__favorites__';
+let reorderPhotoId=null;
+let slideTimer=null;
+const SLIDE_MS=5000;
 
 // ── AUTH ────────────────────────────────────────────────────────────
 let pendingBoot=false; // wait for recovery code confirmation before booting
@@ -1756,13 +1854,21 @@ function renderStats(s, wrap) {
     { v: o.sharedPhotos,   l: t('stats.shared'),           icon: '🔗' },
     { v: o.totalStorageMB + ' MB', l: t('stats.storage_mb'), icon: '💾' },
     { v: o.appVersion || '–',       l: t('stats.version'),    icon: '🏷' },
-  ].forEach(({ v, l, icon }) => {
+  ].concat(o.disk ? [{ v: `${o.disk.freeGB} / ${o.disk.totalGB} GB`, l: t('stats.disk'), icon: '🗄' }] : [])
+   .forEach(({ v, l, icon }) => {
     const card = document.createElement('div');
     card.className = 'stat-card';
     card.innerHTML = `<div class="stat-value">${icon} ${v}</div><div class="stat-label">${l}</div>`;
     grid.appendChild(card);
   });
   overviewSection.appendChild(grid);
+  // Warnung bei fast voller Platte (2.5.0)
+  if (o.disk && o.disk.usedPct >= 90) {
+    const w = document.createElement('div');
+    w.className = 'disk-warn';
+    w.textContent = t('stats.disk_warn', o.disk.usedPct);
+    overviewSection.appendChild(w);
+  }
   wrap.appendChild(overviewSection);
 
   // ── Timeline ──
@@ -1965,7 +2071,7 @@ async function loadObservers(){
     <tr>
       <td><strong>👁 ${esc(o.username)}</strong>${o.mustChangePassword?' <span style="color:var(--muted);font-size:11px">(Setup ausstehend)</span>':''}</td>
       <td>${fmtDate(o.createdAt)}</td>
-      <td><span style="font-size:12px;color:var(--muted)">${t('obs.albums_count',(o.canViewAlbums||[]).length)}</span>
+      <td><span style="font-size:12px;color:var(--muted)">${t('obs.albums_count',(o.canViewAlbums||[]).length)}${hiddenBadge(o)}</span>
         <button class="btn btn-ghost btn-xs" style="margin-left:8px" data-act="obsalbum" data-id="${o.id}">${t('users.album_rights')}</button></td>
       <td style="font-size:12px;color:var(--muted)">${o.lastLoginAt?fmtDateTime(o.lastLoginAt):t('obs.never')}</td>
       <td><div class="td-actions">
@@ -1974,6 +2080,8 @@ async function loadObservers(){
       </div></td>
     </tr>`).join('')||`<tr><td colspan="5" style="color:var(--muted);text-align:center">–</td></tr>`;
 }
+// 2.1.0: Marker in der Beobachtertabelle, wenn versteckte Alben sichtbar sind
+function hiddenBadge(o){return o.canSeeHidden?` <span title="${esc(t('obs.see_hidden'))}">🕶</span>`:'';}
 // Zeile für einen als Beobachter verknüpften Hauptbenutzer (2.0.0)
 function linkedAdminRow(o){
   const pending=o.status!=='active';
@@ -1982,7 +2090,7 @@ function linkedAdminRow(o){
       <td><strong>👥 ${esc(o.username)}</strong>
         <span style="font-size:11px;color:${pending?'var(--muted)':'var(--accent)'}">(${pending?t('link.pending'):t('link.active')})</span></td>
       <td>${o.createdAt?fmtDate(o.createdAt):'–'}</td>
-      <td><span style="font-size:12px;color:var(--muted)">${t('obs.albums_count',(o.canViewAlbums||[]).length)}</span>
+      <td><span style="font-size:12px;color:var(--muted)">${t('obs.albums_count',(o.canViewAlbums||[]).length)}${hiddenBadge(o)}</span>
         <button class="btn btn-ghost btn-xs" style="margin-left:8px" data-act="linkalbum" data-id="${o.id}">${t('users.album_rights')}</button></td>
       <td style="font-size:12px;color:var(--muted)">${pending&&o.expiresAt?t('link.expires',fmtDate(o.expiresAt)):'–'}</td>
       <td><div class="td-actions">
@@ -2018,6 +2126,7 @@ function openObsAlbumsModal(obsId,name,isLink){
   document.getElementById('obsalbums-name').textContent=name;
   const obs=allObservers.find(o=>o.id===obsId);
   const current=obs?.canViewAlbums||[];
+  document.getElementById('obs-see-hidden').checked=!!obs?.canSeeHidden;
   const mine=allAlbums.filter(a=>a.ownerId===me.id);
   document.getElementById('obs-album-tree').innerHTML=mine.map(a=>{
     const checked=current.includes(a.id)?'checked':'';
@@ -2027,8 +2136,9 @@ function openObsAlbumsModal(obsId,name,isLink){
 }
 async function saveObserverAlbums(){
   const checked=[...document.querySelectorAll('#obs-album-tree input:checked')].map(x=>x.value);
+  const canSeeHidden=document.getElementById('obs-see-hidden').checked;
   const url=obsAlbumsIsLink?`/api/observers/link/${obsAlbumsTargetId}/albums`:`/api/observers/${obsAlbumsTargetId}/albums`;
-  const r=await api('PUT',url,{canViewAlbums:checked});
+  const r=await api('PUT',url,{canViewAlbums:checked,canSeeHidden});
   const data=await r.json();
   if(r.ok){toast(t('perm.saved')+t('obs.pending_note',data.pendingCount||0),'success');closeModal('modal-obs-albums');loadObservers();}
   else toast(t('perm.save_err'),'error');
@@ -2129,7 +2239,8 @@ function doExport(){window.location='/api/export';}
 // ═══════════════════════════════════════════════════════════════════
 async function loadAlbums(){
   const r=await fetch('/api/albums');allAlbums=await r.json();
-  if(currentAlbumId && !allAlbums.find(a=>a.id===currentAlbumId)) currentAlbumId=null;
+  // FAV_ID ist ein virtuelles Album und steht nicht in allAlbums
+  if(currentAlbumId && currentAlbumId!==FAV_ID && !allAlbums.find(a=>a.id===currentAlbumId)) currentAlbumId=null;
   loadAlbumContent(currentAlbumId);
 }
 function albumChildren(pid){return allAlbums.filter(a=>a.parentId===pid);}
@@ -2162,8 +2273,10 @@ async function goHome(){
 // ALBUM CONTENT
 // ═══════════════════════════════════════════════════════════════════
 async function loadAlbumContent(albumId){
+  if(albumId===FAV_ID) return loadFavoritesView();
   const content=document.getElementById('album-content');
   content.innerHTML='';
+  reorderPhotoId=null;
   const isHome=!albumId;
   const album=isHome?null:allAlbums.find(a=>a.id===albumId);
   if(!isHome&&!album){currentAlbumId=null;return loadAlbumContent(null);}
@@ -2199,6 +2312,11 @@ async function loadAlbumContent(albumId){
     btnNew.onclick=()=>openNewAlbumModal(isHome?null:albumId);
     if(me.type!=='observer')tacts.appendChild(btnNew);
   }
+  if(!isHome&&album.canManage){
+    const btnSort=document.createElement('button');btnSort.className='btn btn-ghost btn-sm';
+    btnSort.textContent=t('order.btn');btnSort.title=t('order.title');
+    btnSort.onclick=openSortModal;tacts.appendChild(btnSort);
+  }
   if(!isHome&&album.canUpload){
     const btnUp=document.createElement('button');btnUp.className='btn btn-primary btn-sm';
     btnUp.textContent=t('upload.btn');
@@ -2216,9 +2334,12 @@ async function loadAlbumContent(albumId){
       <button class="btn btn-ghost btn-sm" onclick="openMoveModal()" id="btn-move" style="display:none">${t('selection.move')}</button>
       <button class="btn btn-ghost btn-sm" onclick="openLinkModal()" id="btn-link" style="display:none">${t('selection.link')}</button>
       <button class="btn btn-ghost btn-sm" onclick="unlinkSelected()" id="btn-unlink" style="display:none">${t('link.remove_btn')}</button>
+      <button class="btn btn-ghost btn-sm" onclick="enterReorderMode()" id="btn-order" style="display:none">${t('order.move_btn')}</button>
       <button class="btn btn-danger btn-sm" onclick="deleteSelected()" id="btn-del-sel" style="display:none">${t('selection.delete')}</button>`;
     content.appendChild(selBar);
   }
+  // Aufnahmefläche für die Positionswechsel-Leiste (2.5.0)
+  const rbHost=document.createElement('div');rbHost.id='reorder-bar-host';content.appendChild(rbHost);
 
   // ── Upload progress ──
   const prog=document.createElement('div');prog.className='upload-progress';prog.id='upload-progress';
@@ -2234,6 +2355,8 @@ async function loadAlbumContent(albumId){
   } else if(isHome){
     content.innerHTML+=`<div class="empty-state"><div class="e-icon">📁</div><p>${t('albums.no_albums')}</p></div>`;
   }
+
+  if(isHome) addFavoritesTile(content);
 
   // ── Fotos ──
   if(!isHome){
@@ -2262,7 +2385,7 @@ function buildAlbumTile(a){
       tile.insertBefore(img,tile.firstChild);
     }).catch(()=>{});
   } else {
-    const big=document.createElement('div');big.className='at-bigicon';if(a.hidden){big.innerHTML='<svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="#c8a96e" stroke-width="1.6" stroke-linecap="round"><path d="M3 3l18 18M10.6 10.6a3 3 0 004.2 4.2M9.9 4.6A9.8 9.8 0 0121 12c-.7 1.2-1.6 2.3-2.6 3.2M6.2 6.2A9.9 9.9 0 003 12a9.9 9.9 0 0014.8 4.9"/></svg>';}else{big.textContent='📁';}tile.appendChild(big);
+    const big=document.createElement('div');big.className='at-bigicon';if(a._favTile){big.textContent='⭐';}else if(a.hidden){big.innerHTML='<svg viewBox="0 0 24 24" width="42" height="42" fill="none" stroke="#c8a96e" stroke-width="1.6" stroke-linecap="round"><path d="M3 3l18 18M10.6 10.6a3 3 0 004.2 4.2M9.9 4.6A9.8 9.8 0 0121 12c-.7 1.2-1.6 2.3-2.6 3.2M6.2 6.2A9.9 9.9 0 003 12a9.9 9.9 0 0014.8 4.9"/></svg>';}else{big.textContent='📁';}tile.appendChild(big);
   }
 
   const shade=document.createElement('div');shade.className='at-shade';tile.appendChild(shade);
@@ -2324,16 +2447,18 @@ let photosLoadToken=0;
 async function loadPhotos(albumId,wrap){
   const myToken=++photosLoadToken;   // jüngster Ladevorgang gewinnt
   try{
-    const r=await fetch(`/api/albums/${albumId}/photos`);
+    const isFav = albumId===FAV_ID;
+    const r=await fetch(isFav?'/api/photos/favorites':`/api/albums/${albumId}/photos`);
     if(myToken!==photosLoadToken)return;   // veraltete Antwort (Album wurde gewechselt) → verwerfen
     if(r.status===423){wrap.innerHTML=`<div class="empty-state"><div class="e-icon">🔒</div><p>${t('album.locked_toast')}</p></div>`;return;}
     const list=await r.json();
     if(myToken!==photosLoadToken)return;
     currentPhotos=list;
-    if(!currentPhotos.length){wrap.innerHTML=`<div class="empty-state"><div class="e-icon">📷</div><p>${t('albums.empty')}</p></div>`;return;}
+    if(!currentPhotos.length){wrap.innerHTML=`<div class="empty-state"><div class="e-icon">${isFav?'⭐':'📷'}</div><p>${isFav?t('fav.empty'):t('albums.empty')}</p></div>`;return;}
     wrap.innerHTML='<div class="photo-grid" id="photo-grid"></div>';
     const grid=document.getElementById('photo-grid');
-    const isSharedAlbum = albumId === '__shared__' || (me&&me.type==='observer');
+    // Im Favoritenalbum keine Auswahl/Verwaltung – es ist eine reine Sicht
+    const isSharedAlbum = albumId === '__shared__' || isFav || (me&&me.type==='observer');
 
     currentPhotos.forEach((p,i)=>{
       const isOwn=p.ownerId===me.id;
@@ -2365,11 +2490,19 @@ async function loadPhotos(albumId,wrap){
 
       // Click on image wrap → lightbox (whole area, not just img)
       imgWrap.addEventListener('click', e=>{
+        // Positionsmodus (2.5.0): die angetippte Kachel ist das Ziel, nicht die Lightbox
+        if(reorderPhotoId){ if(p.id!==reorderPhotoId) doReorderTo(p.id); return; }
         // Don't open lightbox if clicking the checkbox
         if(e.target.closest('.photo-check')) return;
         if(p.pending){toast(t('photo.pending'),'error');return;}
         openLightbox(i);
       });
+
+      // Favoritenstern (2.5.0) – nur Anzeige, gesetzt wird er in der Großansicht
+      if(p.favorite){
+        const fb=document.createElement('div');fb.className='fav-badge';fb.textContent='⭐';
+        imgWrap.appendChild(fb);
+      }
 
       card.appendChild(imgWrap);
 
@@ -2405,6 +2538,7 @@ async function loadPhotos(albumId,wrap){
       if(p.mimeType&&p.mimeType.startsWith('video/')){videoTile(p,i);}
       else{loadThumb(p.id,i);}
     });
+    applyReorderClasses();
   }catch(e){
     console.error('loadPhotos error:',e);
     wrap.innerHTML=`<div class="empty-state"><p>${t('error')}</p></div>`;
@@ -2460,6 +2594,182 @@ function updateSelectionBar(){
   const btnUnlink=document.getElementById('btn-unlink');
   const allLinked=n>0&&selPhotos.every(p=>p.linkedHere);
   if(btnUnlink)btnUnlink.style.display=allLinked?'':'none';
+  // Position ändern: genau ein Foto und Verwaltungsrecht am Album (2.5.0)
+  const btnOrder=document.getElementById('btn-order');
+  if(btnOrder)btnOrder.style.display=(n===1&&currentAlbumCanManage)?'':'none';
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// POSITION ÄNDERN (2.5.0)
+// Bewusst ohne Drag & Drop: Foto markieren, dann die Zielkachel antippen.
+// Das funktioniert auf Touch und Desktop gleich und kollidiert nicht mit
+// der Swipe-Navigation der Lightbox.
+// ═══════════════════════════════════════════════════════════════════
+function enterReorderMode(){
+  if(selectedPhotos.size!==1)return;
+  reorderPhotoId=[...selectedPhotos][0];
+  selectedPhotos.clear();
+  document.querySelectorAll('.photo-card').forEach(c=>c.classList.remove('selected'));
+  updateSelectionBar();
+  renderReorderBar();
+  applyReorderClasses();
+}
+function cancelReorder(){
+  reorderPhotoId=null;
+  renderReorderBar();
+  applyReorderClasses();
+}
+function renderReorderBar(){
+  const host=document.getElementById('reorder-bar-host');
+  if(!host)return;
+  if(!reorderPhotoId){host.innerHTML='';return;}
+  const p=currentPhotos.find(x=>x.id===reorderPhotoId);
+  host.innerHTML=`<div class="reorder-bar">
+    <span class="rb-text">${esc(t('order.prompt',p?p.originalName:''))}</span>
+    <button class="btn btn-ghost btn-sm" onclick="doReorderTo(null)">${esc(t('order.to_start'))}</button>
+    <button class="btn btn-ghost btn-sm" onclick="cancelReorder()">${esc(t('order.cancel'))}</button>
+  </div>`;
+}
+function applyReorderClasses(){
+  const grid=document.getElementById('photo-grid');
+  if(!grid)return;
+  grid.classList.toggle('reordering',!!reorderPhotoId);
+  grid.querySelectorAll('.photo-card').forEach(c=>
+    c.classList.toggle('rb-moving',!!reorderPhotoId&&c.dataset.photoId===reorderPhotoId));
+}
+async function doReorderTo(afterId){
+  const photoId=reorderPhotoId;
+  if(!photoId||!currentAlbumId||currentAlbumId===FAV_ID)return;
+  reorderPhotoId=null;
+  const r=await api('PUT',`/api/albums/${currentAlbumId}/order`,{photoId,afterId:afterId||null});
+  if(r.ok)toast(t('order.done'),'success');
+  else toast(((await r.json().catch(()=>({}))).error)||t('error'),'error');
+  await loadAlbums();
+}
+
+// ── Sortierung des Albums ──
+function openSortModal(){
+  if(!currentAlbumId||currentAlbumId===FAV_ID)return;
+  document.getElementById('modal-sort').classList.add('open');
+}
+async function applyAlbumSort(mode){
+  closeModal('modal-sort');
+  if(!currentAlbumId||currentAlbumId===FAV_ID)return;
+  const r=(mode==='default')
+    ? await api('DELETE',`/api/albums/${currentAlbumId}/order`)
+    : await api('POST',`/api/albums/${currentAlbumId}/order/sort`,{by:'taken'});
+  if(r.ok)toast(mode==='default'?t('order.reset_done'):t('order.sorted'),'success');
+  else toast(((await r.json().catch(()=>({}))).error)||t('error'),'error');
+  await loadAlbums();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FAVORITEN (2.5.0)
+// ═══════════════════════════════════════════════════════════════════
+async function addFavoritesTile(container){
+  if(!me||me.type==='observer')return;
+  try{
+    const r=await fetch('/api/photos/favorites');
+    if(!r.ok)return;
+    const list=await r.json();
+    if(!list.length)return;
+    if(currentAlbumId)return;   // inzwischen woanders hingewechselt
+    const tile=buildAlbumTile({id:FAV_ID,name:t('fav.album'),parentId:null,
+      photoCount:list.length,locked:false,hidden:false,canManage:false,canUpload:false,_favTile:true});
+    let grid=container.querySelector('.album-tile-grid');
+    if(grid){grid.insertBefore(tile,grid.firstChild);return;}
+    grid=document.createElement('div');grid.className='album-tile-grid';grid.appendChild(tile);
+    const tb=container.querySelector('.content-toolbar');
+    if(tb&&tb.nextSibling)container.insertBefore(grid,tb.nextSibling);else container.appendChild(grid);
+  }catch{}
+}
+async function loadFavoritesView(){
+  const content=document.getElementById('album-content');
+  content.innerHTML='';
+  currentAlbumCanManage=false;selectedPhotos.clear();reorderPhotoId=null;
+  const toolbar=document.createElement('div');toolbar.className='content-toolbar';
+  const bc=document.createElement('div');bc.className='breadcrumb';
+  const homeItem=document.createElement('span');homeItem.className='breadcrumb-item';
+  homeItem.textContent=t('home.title');homeItem.onclick=goHome;bc.appendChild(homeItem);
+  const sep=document.createElement('span');sep.className='breadcrumb-sep';sep.textContent='/';bc.appendChild(sep);
+  const cur=document.createElement('span');cur.className='breadcrumb-item current';
+  cur.textContent='⭐ '+t('fav.album');bc.appendChild(cur);
+  toolbar.appendChild(bc);content.appendChild(toolbar);
+  const wrap=document.createElement('div');wrap.id='photos-wrap';
+  wrap.innerHTML=`<div class="empty-state"><div class="e-icon">⏳</div><p>${t('loading')}</p></div>`;
+  content.appendChild(wrap);
+  loadPhotos(FAV_ID,wrap);
+}
+async function toggleFavCurrent(){
+  const p=lbPhotos[lbIndex];
+  if(!p||!p.canFavorite)return;
+  const next=!p.favorite;
+  const r=await api('PUT',`/api/photos/${p.id}/favorite`,{favorite:next});
+  if(!r.ok){toast(t('error'),'error');return;}
+  p.favorite=next;
+  updateFavButton();
+  toast(next?t('fav.added'):t('fav.removed'),'success');
+  // Kachel im Hintergrund mitziehen, ohne alles neu zu laden
+  const wrapEl=document.querySelector(`[data-photo-id="${p.id}"] .photo-img-wrap`);
+  if(wrapEl){
+    const old=wrapEl.querySelector('.fav-badge');
+    if(next&&!old){const b=document.createElement('div');b.className='fav-badge';b.textContent='⭐';wrapEl.appendChild(b);}
+    else if(!next&&old)old.remove();
+  }
+}
+function updateFavButton(){
+  const btn=document.getElementById('lb-fav');
+  if(!btn)return;
+  const p=lbPhotos[lbIndex];
+  if(!p||!p.canFavorite){btn.style.display='none';return;}
+  btn.style.display='';
+  btn.textContent=p.favorite?'★':'☆';
+  btn.classList.toggle('active',!!p.favorite);
+  btn.title=p.favorite?t('fav.remove'):t('fav.add');
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// DIASHOW (2.5.0) – Videos laufen zu Ende, dann geht es weiter
+// ═══════════════════════════════════════════════════════════════════
+function toggleSlideshow(){ if(slideTimer!==null)stopSlideshow(); else startSlideshow(); }
+function startSlideshow(){
+  if(slideTimer!==null||lbPhotos.length<2)return;
+  slideTimer=-1;                     // -1 = läuft, wartet auf das nächste Signal
+  updateSlideshowButton();
+  scheduleSlide();
+}
+function stopSlideshow(){
+  if(slideTimer!==null&&slideTimer!==-1)clearTimeout(slideTimer);
+  slideTimer=null;
+  const v=document.getElementById('lb-video');
+  if(v)v.onended=null;
+  updateSlideshowButton();
+}
+function scheduleSlide(){
+  if(slideTimer===null)return;
+  if(slideTimer!==-1){clearTimeout(slideTimer);slideTimer=-1;}
+  const p=lbPhotos[lbIndex];
+  const v=document.getElementById('lb-video');
+  if(p&&p.mimeType&&p.mimeType.startsWith('video/')&&v){
+    v.onended=()=>{v.onended=null;advanceSlide();};
+    return;
+  }
+  slideTimer=setTimeout(advanceSlide,SLIDE_MS);
+}
+function advanceSlide(){
+  if(slideTimer===null||!lbPhotos.length)return;
+  resetIdleTimer();   // eine laufende Diashow ist aktive Nutzung
+  slideTimer=-1;
+  lbIndex=(lbIndex+1)%lbPhotos.length;   // am Ende wieder von vorn
+  renderLightbox();
+}
+function updateSlideshowButton(){
+  const btn=document.getElementById('lb-slideshow');
+  if(!btn)return;
+  const on=slideTimer!==null;
+  btn.textContent=on?'⏸':'▶';
+  btn.classList.toggle('active',on);
+  btn.title=on?t('slideshow.stop'):t('slideshow.start');
 }
 
 
@@ -2581,15 +2891,23 @@ async function doMoveSelected(){
 async function deleteSelected(){
   const n=selectedPhotos.size;
   if(!confirm(t('selection.confirm_delete',n)))return;
-  let deleted=0;
+  const done=[];
   for(const id of [...selectedPhotos]){
     const r=await fetch(`/api/photos/${id}`,{method:'DELETE'});
-    if(r.ok)deleted++;
+    if(r.ok)done.push(id);
   }
-  toast(t('selection.deleted',deleted),'success');
   selectedPhotos.clear();
   await loadAlbums();
-  loadAlbumContent(currentAlbumId);
+  // 2.5.0: Der Server hat die Dateien noch nicht angefasst – innerhalb des
+  // Zeitfensters lässt sich das Löschen zurücknehmen.
+  if(done.length)toastUndo(t('selection.deleted',done.length),()=>undoDelete(done));
+  else toast(t('error'),'error');
+}
+async function undoDelete(ids){
+  const r=await api('POST','/api/photos/restore',{photoIds:ids});
+  const data=await r.json().catch(()=>({}));
+  if(r.ok&&data.restored){toast(t('undo.restored',data.restored),'success');await loadAlbums();}
+  else toast(t('undo.expired'),'error');
 }
 
 // ── UPLOAD ──────────────────────────────────────────────────────────
@@ -2628,7 +2946,7 @@ async function handleFiles(files){
     cur.push(f);curSize+=f.size;
   }
   if(cur.length)batches.push(cur);
-  const uploaded=[],errors=[];
+  const uploaded=[],errors=[],dups=[];
   try{
     for(const batch of batches){
       const form=new FormData();
@@ -2637,18 +2955,23 @@ async function handleFiles(files){
       try{
         const r=await fetch('/api/photos/upload',{method:'POST',body:form});
         const data=await r.json().catch(()=>null);
-        if(r.ok&&data){uploaded.push(...data.uploaded);errors.push(...data.errors);}
+        if(r.ok&&data){uploaded.push(...data.uploaded);errors.push(...data.errors);dups.push(...(data.duplicates||[]));}
         else errors.push(...batch.map(f=>f.name));
       }catch{errors.push(...batch.map(f=>f.name));}
       for(const f of batch)onBytes(f.size);
     }
     for(const f of large){
-      try{const up=await uploadChunked(f,albumId,onBytes);uploaded.push(up);}
+      try{
+        const fin=await uploadChunked(f,albumId,onBytes);
+        if(fin.uploaded&&fin.uploaded.length)uploaded.push(fin.uploaded[0]);
+        if(fin.duplicates&&fin.duplicates.length)dups.push(...fin.duplicates);
+      }
       catch(e){console.warn('Chunked upload failed:',f.name,e.message);errors.push(f.name);}
     }
     bar.style.width='100%';
-    stat.textContent=t('upload.done',uploaded.length,errors.length);
-    if(uploaded.length)toast(t('upload.toast',uploaded.length),'success');
+    stat.textContent=t('upload.done',uploaded.length,errors.length)+(dups.length?` · ${t('upload.duplicates',dups.length)}`:'');
+    if(uploaded.length)toast(t('upload.toast',uploaded.length)+(dups.length?` · ${t('upload.duplicates',dups.length)}`:''),'success');
+    else if(dups.length)toast(t('upload.duplicates',dups.length),'');
     loadAlbums();
     setTimeout(()=>{prog.classList.remove('visible');bar.style.width='0';},4000);
     document.getElementById('file-input').value='';
@@ -2688,7 +3011,7 @@ async function uploadChunked(file,albumId,onBytes){
       headers:{'Content-Type':'application/json'},body:JSON.stringify({uploadId})});
     const fin=await fr.json().catch(()=>({}));
     if(!fr.ok)throw new Error(fin.error||'finish failed');
-    return fin.uploaded[0];
+    return fin;   // enthält uploaded[] und duplicates[] (2.5.0)
   }catch(e){
     fetch('/api/photos/upload-cancel',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({uploadId})}).catch(()=>{});
@@ -2748,6 +3071,8 @@ function renderLightbox(){
   const p=lbPhotos[lbIndex];if(!p)return;
   // View exakt einmal pro Öffnung zählen (Server dedupliziert zusätzlich 10 Min)
   fetch(`/api/photos/${p.id}/view`,{method:'POST'}).catch(()=>{});
+  updateFavButton();
+  updateSlideshowButton();
   document.getElementById('lb-title').textContent=(me&&me.type==='observer')?'':p.originalName;
   document.getElementById('lb-counter').textContent=`${lbIndex+1} / ${lbPhotos.length}`;
   document.getElementById('lb-prev').disabled=lbIndex===0;
@@ -2785,6 +3110,7 @@ function renderLightbox(){
         vid.play().catch(()=>{});
       }).catch(()=>{});
     }
+    scheduleSlide();   // Diashow: nach dem Videoende weiterschalten
     return;
   }
   // ── Foto: Video stoppen und verstecken, Overlay wieder aktivieren ──
@@ -2830,6 +3156,7 @@ function renderLightbox(){
   const strip=document.getElementById('lb-strip');
   const active=strip.children[lbIndex];
   if(active)active.scrollIntoView({behavior:'smooth',block:'nearest',inline:'center'});
+  scheduleSlide();
 }
 
 function buildStrip(){
@@ -2860,6 +3187,7 @@ function lbNavigate(dir){
 
 function stopLbVideo(){const v=document.getElementById('lb-video');if(v){v.pause();if(v._url){URL.revokeObjectURL(v._url);v._url=null;}v.src='';v.style.display='none';}}
 function closeLightbox(){
+  stopSlideshow();
   stopLbVideo();
   document.getElementById('lightbox').classList.remove('open');
   const canvas=document.getElementById('lightbox-img');
@@ -3053,6 +3381,19 @@ async function changePassword(){
 function api(method,url,body){return fetch(url,{method,headers:{'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});}
 function closeModal(id){document.getElementById(id).classList.remove('open');}
 function toast(msg,type=''){const el=document.getElementById('toast');el.textContent=msg;el.className=`show ${type}`;clearTimeout(toast._t);toast._t=setTimeout(()=>el.className='',3000);}
+// Toast mit Aktionsknopf (2.5.0) – steht länger, weil man ihn lesen und
+// treffen können muss.
+function toastUndo(msg,fn,ms=10000){
+  const el=document.getElementById('toast');
+  el.textContent=msg;
+  const b=document.createElement('button');
+  b.className='toast-undo';b.textContent=t('undo.btn');
+  b.onclick=()=>{el.className='';clearTimeout(toast._t);fn();};
+  el.appendChild(b);
+  el.className='show success';
+  clearTimeout(toast._t);
+  toast._t=setTimeout(()=>el.className='',ms);
+}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;').replace(/`/g,'&#96;');}
 function fmtDateTime(ts){if(!ts)return'';const d=new Date(ts);return d.toLocaleDateString()+' '+d.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});}
 function fmtDate(ts){return new Date(ts).toLocaleDateString(lang==='de'?'de-DE':'en-GB',{day:'2-digit',month:'2-digit',year:'numeric'});}
