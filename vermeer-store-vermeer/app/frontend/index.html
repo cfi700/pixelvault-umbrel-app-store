@@ -346,6 +346,25 @@
     color:#fff;border-radius:999px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;
     font-size:11px;padding-left:2px;backdrop-filter:blur(2px)}
 
+  /* ── 2.6.0: PDF-Dokumente ── */
+  .pdf-badge{position:absolute;right:6px;bottom:6px;z-index:2;background:rgba(0,0,0,.65);
+    color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;letter-spacing:.06em;
+    font-weight:600;backdrop-filter:blur(2px);pointer-events:none}
+  /* Eigener Scroll-Container: ein PDF wird geblättert, nicht wie ein Bild
+     eingepasst. Liegt über dem Speicherschutz-Overlay (z-index 1), damit
+     Scrollen und Zoomen ankommen – vgl. den Video-Fix aus 1.10.3.
+     Bewusst `display:block` statt Flex-Zentrierung: bei Zoomstufen über
+     „passend" ist die Seite breiter als der Container, und ein zentrierendes
+     Flex-Layout macht den überstehenden linken Rand unerreichbar. */
+  #lb-pdf{position:absolute;inset:0;z-index:2;overflow:auto;-webkit-overflow-scrolling:touch;
+    display:none;padding:14px}
+  #lb-pdf.open{display:block}
+  .lb-pdf-page{margin:0 auto 14px;background:#fff;border-radius:4px;
+    box-shadow:0 12px 40px rgba(0,0,0,.6);overflow:hidden}
+  .lb-pdf-page canvas{display:block;width:100%;height:auto}
+  .lb-pdf-note{color:var(--muted);font-size:13px;padding:24px;text-align:center}
+  .lb-pdf-info{font-size:12px;color:var(--muted);white-space:nowrap}
+
   /* ── 2.5.0: Favoriten, Positionswechsel, Undo ── */
   .fav-badge{position:absolute;top:6px;right:6px;z-index:2;font-size:14px;line-height:1;
     text-shadow:0 1px 4px rgba(0,0,0,.9);pointer-events:none}
@@ -722,6 +741,9 @@
   <div class="lb-topbar">
     <span class="lb-title" id="lb-title"></span>
     <span class="lb-counter" id="lb-counter"></span>
+    <span class="lb-pdf-info" id="lb-pdf-info" style="display:none"></span>
+    <button class="lb-icon-btn" id="lb-pdf-out" onclick="pdfZoom(-1)" style="display:none">−</button>
+    <button class="lb-icon-btn" id="lb-pdf-in" onclick="pdfZoom(1)" style="display:none">+</button>
     <button class="lb-icon-btn" id="lb-fav" onclick="toggleFavCurrent()" style="display:none">☆</button>
     <button class="lb-icon-btn" id="lb-slideshow" onclick="toggleSlideshow()">▶</button>
     <button class="lb-close" onclick="closeLightbox()">✕</button>
@@ -729,6 +751,8 @@
   <div class="lb-img-wrap">
     <button class="lb-arrow left" id="lb-prev" onclick="lbNavigate(-1)">&#8249;</button>
     <div class="lb-img-overlay" id="lb-img-overlay"></div>
+    <!-- PDF-Anzeige (2.6.0): pdf.js rendert jede Seite in ein eigenes Canvas -->
+    <div id="lb-pdf"></div>
   <canvas id="lightbox-img" style="max-width:100%;max-height:100%;border-radius:6px;box-shadow:0 24px 80px rgba(0,0,0,.8);display:block"></canvas>
   <video id="lb-video" controls playsinline controlsList="nodownload" disablepictureinpicture
     style="display:none;max-width:min(100%,800px);max-height:min(calc(100vh - 100px),800px);border-radius:6px;box-shadow:0 24px 80px rgba(0,0,0,.8)"></video>
@@ -990,7 +1014,7 @@
   </div>
 </div>
 <div id="toast"></div>
-<input type="file" id="file-input" multiple accept="image/*,video/mp4,video/webm,video/quicktime,.mp4,.webm,.mov" style="display:none" onchange="handleFiles(this.files)">
+<input type="file" id="file-input" multiple accept="image/*,video/mp4,video/webm,video/quicktime,application/pdf,.mp4,.webm,.mov,.pdf" style="display:none" onchange="handleFiles(this.files)">
 
 <script>
 // ═══════════════════════════════════════════════════════════════════
@@ -1036,9 +1060,14 @@ const T = {
     'album.edit_title':(n)=>`Album »${n}« bearbeiten`,
     'upload.btn':'📤 Hochladen',
     'upload.encrypting':(n)=>`🔒 Lade ${n} Datei(en) hoch…`,
-    'upload.done':(ok,err)=>`✅ ${ok} Foto(s) gespeichert${err?` · ⚠ ${err} Fehler`:''}`,
+    'upload.done':(ok,err)=>`✅ ${ok} Datei(en) gespeichert${err?` · ⚠ ${err} Fehler`:''}`,
     'upload.fail':'Upload fehlgeschlagen',
-    'upload.toast':(n)=>`${n} Foto(s) hochgeladen`,
+    'upload.toast':(n)=>`${n} Datei(en) hochgeladen`,
+    'pdf.loading':'PDF wird geladen…',
+    'pdf.error':'Dieses PDF konnte nicht angezeigt werden.',
+    'pdf.page_error':(n)=>`Seite ${n} konnte nicht gerendert werden`,
+    'pdf.pages':(n)=>`${n} Seite${n!==1?'n':''}`,
+    'pdf.zoom_in':'Vergrößern','pdf.zoom_out':'Verkleinern',
     'selection.none':'Keine Auswahl',
     'selection.count':(n)=>`${n} Foto${n!==1?'s':''} ausgewählt`,
     'selection.select_all':'Alle wählen','selection.deselect_all':'Auswahl aufheben',
@@ -1231,9 +1260,14 @@ const T = {
     'album.edit_title':(n)=>`Edit album "${n}"`,
     'upload.btn':'📤 Upload',
     'upload.encrypting':(n)=>`🔒 Uploading ${n} file(s)…`,
-    'upload.done':(ok,err)=>`✅ ${ok} photo(s) saved${err?` · ⚠ ${err} failed`:''}`,
+    'upload.done':(ok,err)=>`✅ ${ok} file(s) saved${err?` · ⚠ ${err} failed`:''}`,
     'upload.fail':'Upload failed',
-    'upload.toast':(n)=>`${n} photo(s) uploaded`,
+    'upload.toast':(n)=>`${n} file(s) uploaded`,
+    'pdf.loading':'Loading PDF…',
+    'pdf.error':'This PDF could not be displayed.',
+    'pdf.page_error':(n)=>`Page ${n} could not be rendered`,
+    'pdf.pages':(n)=>`${n} page${n!==1?'s':''}`,
+    'pdf.zoom_in':'Zoom in','pdf.zoom_out':'Zoom out',
     'selection.none':'No selection',
     'selection.count':(n)=>`${n} photo${n!==1?'s':''} selected`,
     'selection.select_all':'Select all','selection.deselect_all':'Deselect all',
@@ -2504,6 +2538,13 @@ async function loadPhotos(albumId,wrap){
         imgWrap.appendChild(fb);
       }
 
+      // PDF-Kennzeichnung (2.6.0): das Thumbnail ist ein Symbol, das Badge macht
+      // den Dateityp auf einen Blick eindeutig.
+      if(p.isPdf){
+        const pb=document.createElement('div');pb.className='pdf-badge';pb.textContent='PDF';
+        imgWrap.appendChild(pb);
+      }
+
       card.appendChild(imgWrap);
 
       // ── Info (Beobachter sehen nur das Bild – kein Name, kein Datum) ──
@@ -3061,6 +3102,155 @@ function openLightbox(idx){
   buildStrip();
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// PDF-ANZEIGE (2.6.0) – pdf.js rendert jede Seite in ein eigenes Canvas
+// ═══════════════════════════════════════════════════════════════════
+// Bewusst dieselbe Anzeigetechnik wie bei Fotos: gerendertes Canvas statt
+// des eingebauten PDF-Viewers des Browsers. Der hätte einen Download- und
+// Druckknopf und würde den gesamten Speicherschutz aushebeln; auf iOS zeigt
+// er in einem <iframe> zudem nur die erste Seite.
+// Seiten werden erst gerendert, wenn sie in Sichtweite scrollen – ein
+// 200-Seiten-Dokument darf den Raspberry nicht in die Knie zwingen.
+let pdfLibPromise=null;      // dynamischer Import, erst beim ersten PDF
+let pdfDoc=null;             // aktuell geöffnetes Dokument
+let pdfToken=0;              // jüngster Ladevorgang gewinnt (vgl. photosLoadToken)
+let pdfObserver=null;
+let pdfZoomStep=0;
+const PDF_ZOOMS=[1,1.5,2,3];   // 1 = an die Breite angepasst
+
+function loadPdfLib(){
+  if(!pdfLibPromise){
+    pdfLibPromise=import('/vendor/pdfjs/build/pdf.min.mjs').then(lib=>{
+      lib.GlobalWorkerOptions.workerSrc='/vendor/pdfjs/build/pdf.worker.min.mjs';
+      return lib;
+    }).catch(e=>{pdfLibPromise=null;throw e;});   // nächster Versuch darf neu laden
+  }
+  return pdfLibPromise;
+}
+
+// Aufräumen: laufende Renderaufträge verwerfen, Dokument freigeben, Container leeren.
+// Wird bei JEDEM renderLightbox-Durchlauf aufgerufen, damit beim Wechsel auf ein
+// Foto oder Video kein PDF im Hintergrund stehen bleibt.
+function stopLbPdf(){
+  pdfToken++;
+  if(pdfObserver){pdfObserver.disconnect();pdfObserver=null;}
+  const box=document.getElementById('lb-pdf');
+  if(box){box.classList.remove('open');box.innerHTML='';}
+  if(pdfDoc){try{pdfDoc.destroy();}catch{} pdfDoc=null;}
+  ['lb-pdf-in','lb-pdf-out'].forEach(id=>{const b=document.getElementById(id);if(b)b.style.display='none';});
+  const info=document.getElementById('lb-pdf-info');
+  if(info)info.style.display='none';
+}
+
+async function renderPdf(p){
+  const token=++pdfToken;
+  pdfZoomStep=0;
+  const box=document.getElementById('lb-pdf');
+  if(!box)return;
+  box.classList.add('open');
+  box.innerHTML=`<div class="lb-pdf-note">${esc(t('pdf.loading'))}</div>`;
+  try{
+    const lib=await loadPdfLib();
+    if(token!==pdfToken)return;
+    const r=await fetch(`/api/photos/${p.id}/full`);
+    if(!r.ok)throw new Error('HTTP '+r.status);
+    const data=new Uint8Array(await r.arrayBuffer());
+    if(token!==pdfToken)return;
+    const doc=await lib.getDocument({
+      data,
+      standardFontDataUrl:'/vendor/pdfjs/standard_fonts/',
+      wasmUrl:'/vendor/pdfjs/wasm/',
+      iccUrl:'/vendor/pdfjs/iccs/',
+      enableXfa:false,          // XFA-Formulare bewusst aus
+      isEvalSupported:false     // kein Function()-Pfad für Font-Programme
+    }).promise;
+    if(token!==pdfToken){try{doc.destroy();}catch{} return;}
+    pdfDoc=doc;
+    buildPdfPages(token);
+  }catch(e){
+    if(token!==pdfToken)return;
+    console.warn('PDF render failed:',e&&e.message);
+    box.innerHTML=`<div class="lb-pdf-note">${esc(t('pdf.error'))}</div>`;
+  }
+}
+
+// Breite einer Seite in CSS-Pixeln: an den Container angepasst, nach oben durch
+// dieselbe Einstellung begrenzt wie Fotos (Galerie-Einstellungen), mal Zoomstufe.
+function pdfPageWidth(box){
+  const avail=Math.max(200,((box&&box.clientWidth)||window.innerWidth)-28);
+  return Math.round(Math.min(avail,LB_PHOTO_PX())*PDF_ZOOMS[pdfZoomStep]);
+}
+
+// Platzhalter für alle Seiten anlegen und beobachten. Die Höhe ist zunächst
+// geschätzt (A4-Verhältnis) und wird beim tatsächlichen Rendern korrigiert –
+// so steht die Scrollleiste sofort und springt später nur geringfügig.
+function buildPdfPages(token){
+  const box=document.getElementById('lb-pdf');
+  if(!box||!pdfDoc)return;
+  box.innerHTML='';
+  const n=pdfDoc.numPages;
+  const info=document.getElementById('lb-pdf-info');
+  if(info){info.textContent=t('pdf.pages',n);info.style.display='';}
+  const zi=document.getElementById('lb-pdf-in'),zo=document.getElementById('lb-pdf-out');
+  if(zi){zi.style.display='';zi.title=t('pdf.zoom_in');}
+  if(zo){zo.style.display='';zo.title=t('pdf.zoom_out');}
+  if(pdfObserver)pdfObserver.disconnect();
+  pdfObserver=new IntersectionObserver(entries=>{
+    for(const en of entries){
+      if(!en.isIntersecting)continue;
+      pdfObserver.unobserve(en.target);
+      drawPdfPage(Number(en.target.dataset.page),en.target,token);
+    }
+  },{root:box,rootMargin:'400px 0px'});
+  const w=pdfPageWidth(box);
+  for(let i=1;i<=n;i++){
+    const holder=document.createElement('div');
+    holder.className='lb-pdf-page';
+    holder.dataset.page=String(i);
+    holder.style.width=w+'px';
+    holder.style.height=Math.round(w*1.414)+'px';
+    box.appendChild(holder);
+    pdfObserver.observe(holder);
+  }
+}
+
+async function drawPdfPage(num,holder,token){
+  if(token!==pdfToken||!pdfDoc)return;
+  try{
+    const page=await pdfDoc.getPage(num);
+    if(token!==pdfToken)return;
+    const base=page.getViewport({scale:1});
+    const cssW=parseFloat(holder.style.width)||pdfPageWidth(document.getElementById('lb-pdf'));
+    const dpr=Math.min(window.devicePixelRatio||1,2);   // gedeckelt: Speicher auf Handys
+    const vp=page.getViewport({scale:(cssW/base.width)*dpr});
+    const canvas=document.createElement('canvas');
+    canvas.width=Math.round(vp.width);
+    canvas.height=Math.round(vp.height);
+    await page.render({canvasContext:canvas.getContext('2d'),viewport:vp}).promise;
+    if(token!==pdfToken)return;
+    // Wasserzeichen wie bei Fotos – Sichtschutz, kein Krypto
+    if(me&&me.username&&window.addWatermark)window.addWatermark(canvas,me.username);
+    holder.style.height='';
+    holder.replaceChildren(canvas);
+    try{page.cleanup();}catch{}
+  }catch(e){
+    if(token!==pdfToken)return;
+    holder.style.height='';
+    holder.style.padding='20px';
+    holder.style.color='var(--muted)';
+    holder.textContent=t('pdf.page_error',num);
+  }
+}
+
+// Zoom: baut die Seiten in der neuen Breite neu auf. Die Token-Erhöhung bricht
+// noch laufende Renderaufträge der alten Stufe ab.
+function pdfZoom(dir){
+  const next=Math.max(0,Math.min(PDF_ZOOMS.length-1,pdfZoomStep+dir));
+  if(next===pdfZoomStep||!pdfDoc)return;
+  pdfZoomStep=next;
+  buildPdfPages(++pdfToken);
+}
+
 // Anzeige-Limits der Lightbox (längste Kante in CSS-Pixeln, Aspect Ratio
 // bleibt immer erhalten). Video-Limit wird zusätzlich im Inline-Style des
 // <video id="lb-video">-Elements gespiegelt (800px).
@@ -3082,6 +3272,22 @@ function renderLightbox(){
   const canvas=document.getElementById('lightbox-img');
   const vid=document.getElementById('lb-video');
   const ov=document.getElementById('lb-img-overlay');
+  // 2.6.0: ein evtl. offenes PDF IMMER zuerst abräumen (Dokument freigeben,
+  // laufende Renderaufträge verwerfen) – sonst bliebe es beim Wechsel auf ein
+  // Foto oder Video über der Anzeige stehen.
+  stopLbPdf();
+  // ── PDF-Dokument (2.6.0) ──
+  if(p.isPdf||p.mimeType==='application/pdf'){
+    canvas.style.display='none';
+    if(vid){vid.pause();vid.style.display='none';if(vid._url){URL.revokeObjectURL(vid._url);vid._url=null;}vid.src='';}
+    // Overlay ausblenden: es würde Scrollen, Zoomen und Antippen schlucken –
+    // exakt der Fehler, der bei Videos in 1.10.3 behoben wurde.
+    // Schutz bleibt: Canvas-Rendering und der globale contextmenu-Block.
+    if(ov)ov.style.display='none';
+    renderPdf(p);
+    scheduleSlide();   // Diashow behandelt ein PDF wie ein Foto (feste Dauer)
+    return;
+  }
   // ── Video-Wiedergabe ──
   if(p.mimeType&&p.mimeType.startsWith('video/')){
     canvas.style.display='none';
@@ -3189,6 +3395,7 @@ function stopLbVideo(){const v=document.getElementById('lb-video');if(v){v.pause
 function closeLightbox(){
   stopSlideshow();
   stopLbVideo();
+  stopLbPdf();
   document.getElementById('lightbox').classList.remove('open');
   const canvas=document.getElementById('lightbox-img');
   const ctx=canvas.getContext('2d');
@@ -3199,9 +3406,11 @@ function closeLightbox(){
 document.addEventListener('keydown',e=>{
   const lb=document.getElementById('lightbox');
   if(!lb.classList.contains('open'))return;
-  // Bei sichtbarem Video: Pfeiltasten dem nativen Spulen überlassen
+  // Bei sichtbarem Video: Pfeiltasten dem nativen Spulen überlassen.
+  // Bei offenem PDF (2.6.0): dem Scrollen im Dokument überlassen.
   const v=document.getElementById('lb-video');
-  const videoActive=v&&v.style.display!=='none';
+  const pdfBox=document.getElementById('lb-pdf');
+  const videoActive=(v&&v.style.display!=='none')||(pdfBox&&pdfBox.classList.contains('open'));
   if(!videoActive&&(e.key==='ArrowRight'||e.key==='ArrowDown'))lbNavigate(1);
   else if(!videoActive&&(e.key==='ArrowLeft'||e.key==='ArrowUp'))lbNavigate(-1);
   else if(e.key==='Escape')closeLightbox();
@@ -3232,8 +3441,10 @@ document.getElementById('lb-img-overlay').addEventListener('click',()=>closeLigh
     const target=e.changedTouches[0].target;
 
     // Touches auf dem Video gehören den nativen Controls (Scrubbing/Play):
-    // weder Swipe-Navigation noch Schließen auslösen
-    if(target&&target.closest&&target.closest('#lb-video'))return;
+    // weder Swipe-Navigation noch Schließen auslösen.
+    // Dasselbe für das PDF (2.6.0): dort wird gescrollt und gezoomt, ein
+    // horizontaler Wisch darf nicht zum nächsten Foto springen.
+    if(target&&target.closest&&(target.closest('#lb-video')||target.closest('#lb-pdf')))return;
 
     // Must be fast enough (<400ms), horizontal enough (2x more than vertical)
     // and long enough (>40px) to count as a swipe

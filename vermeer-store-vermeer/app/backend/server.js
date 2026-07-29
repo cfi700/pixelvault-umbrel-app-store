@@ -20,7 +20,18 @@ const FileStore = require('session-file-store')(session);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = '2.5.0';
+const APP_VERSION = '2.6.0';
+
+// ─── PDF-Dokumente (2.6.0) ────────────────────────────────────────
+// Ein PDF ist aus Sicht der Speicherung exakt ein Foto: eine Ganzdatei,
+// die einmal per AES-256-GCM eingepackt wird. Bewusst KEIN eigener
+// Verschlüsselungskontext und kein unverschlüsselter Sonderweg – jede
+// Ausnahme müsste sonst in migrateUserPhotos, resolveReadKey, Export und
+// jedem Torwächter mitgeführt werden. Unterschiedlich ist nur zweierlei:
+// das Thumbnail (generiertes Symbol statt Bildinhalt) und die Anzeige
+// (pdf.js im Canvas statt <img>/<video>).
+const PDF_MIME = 'application/pdf';
+function isPdfMime(m) { return String(m || '') === PDF_MIME; }
 
 // ─── Galerie-Einstellungen (Admin, ab 1.11.0) ─────────────────────
 // Persistiert in db.json unter `settings`. Alle Werte sind reine
@@ -700,12 +711,20 @@ app.use((req, res, next) => {
   res.set('Cross-Origin-Resource-Policy', 'same-origin');
   res.set('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
   // CSP: allow self + the Google Fonts used by the UI; block plugins/framing
+  // 2.6.0: `wasm-unsafe-eval` ist für pdf.js nötig – die Decoder für JBIG2,
+  // JPEG-2000 und ICC-Profile in gescannten PDFs sind WebAssembly. Das Schlüssel-
+  // wort erlaubt ausschließlich das Übersetzen von WASM, KEIN eval() für
+  // JavaScript. `worker-src` wird explizit gesetzt (statt über default-src zu
+  // erben), damit der pdf.js-Worker beim Nachziehen der CSP nicht stillschweigend
+  // wegfällt. `object-src 'none'` bleibt: das eingebaute PDF-Plugin des Browsers
+  // wird bewusst NICHT genutzt (es hätte einen Download-Knopf).
   res.set('Content-Security-Policy',
     "default-src 'self'; " +
     "img-src 'self' data: blob:; " +
     "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; " +
     "font-src 'self' https://fonts.gstatic.com; " +
-    "script-src 'self' 'unsafe-inline'; " +
+    "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; " +
+    "worker-src 'self' blob:; " +
     "connect-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'");
   next();
 });
@@ -724,8 +743,24 @@ app.use(session({
 app.use(express.static(path.join(__dirname, '../frontend'), {
   setHeaders: (res, filePath) => {
     if (filePath.endsWith('.html')) res.set('Cache-Control', 'no-store, must-revalidate');
+    // pdf.js (2.6.0): versionsgebunden und unveränderlich – der Worker ist über
+    // 1 MB groß und soll nicht bei jedem Seitenaufruf neu geladen werden.
+    else if (filePath.includes(`${path.sep}vendor${path.sep}`)) res.set('Cache-Control', 'public, max-age=31536000, immutable');
   }
 }));
+
+// ─── pdf.js (2.6.0) ───────────────────────────────────────────────
+// Liegt als mitgelieferte Datei unter app/frontend/vendor/pdfjs und wird von
+// der express.static-Regel oben mit ausgeliefert. Bewusst NICHT von einem CDN
+// (CSP `script-src 'self'`, Selbsthosting-Prinzip, funktioniert auch ohne
+// Internetzugang des Umbrel) und bewusst NICHT als npm-Abhängigkeit: pdfjs-dist
+// zieht optional `@napi-rs/canvas` nach – zweistellige MB an Native-Binaries für
+// serverseitiges Rendern, das hier niemand braucht.
+// Mitgeliefert ist nur, was der Browser wirklich holt (Fassung siehe
+// PDFJS_VERSION); `web/viewer.html` fehlt bewusst – das wäre ein vollständiger
+// PDF-Viewer MIT Download- und Druckknopf auf der eigenen Origin und damit
+// genau die Lücke, die die Canvas-Anzeige schließen soll.
+const PDFJS_VERSION = '6.2.108';
 
 function requireAuth(req, res, next) { if (!req.session.userId) return res.status(401).json({ error: 'Not authenticated' }); next(); }
 function requireAdmin(req, res, next) {
@@ -765,7 +800,7 @@ const upload = multer({
   fileFilter: (_, file, cb) => {
     const isImage = file.mimetype.startsWith('image/');
     const isVideo = /^video\/(mp4|webm|quicktime)$/.test(file.mimetype);
-    if (!isImage && !isVideo) return cb(new Error('Images or videos (mp4/webm/mov) only'));
+    if (!isImage && !isVideo && !isPdfMime(file.mimetype)) return cb(new Error('Images, videos (mp4/webm/mov) or PDF only'));
     cb(null, true);
   }
 });
@@ -1387,8 +1422,41 @@ app.delete('/api/albums/:id', requireAuth, (req, res) => {
 // Wird vom klassischen Upload UND vom Chunked-Upload-Finish genutzt.
 // Rückgabe: der neue Datensatz ODER `{ duplicate: true }`, wenn derselbe Nutzer
 // diese Datei bereits abgelegt hat (Fingerabdruck über den Klartext, 2.5.0).
+// ─── PDF-Thumbnail (2.6.0, Variante T1) ───────────────────────────
+// Bewusst KEIN Rendern der ersten Seite: dafür bräuchte das Image poppler
+// oder mupdf (libvips/sharp kann PDF nur, wenn es mit PDFium/poppler-glib
+// übersetzt wurde – im Alpine-Paket ist das nicht der Fall). Stattdessen
+// ein aus den Galerie-Farben erzeugtes Dokumentsymbol, exakt nach dem
+// Muster der PWA-Icons. Es entsteht EINMAL beim Upload und wird wie jedes
+// andere Thumbnail verschlüsselt abgelegt – dadurch funktionieren Kachel,
+// Filmstreifen, Album-Cover und Statistik-Vorschau ohne Sonderfall.
+// Bewusst ohne <text>: Schriftrendering in librsvg setzt Fonts im Image
+// voraus, die dort nicht garantiert sind. Reine Formen rendern immer.
+function pdfIconSvg(size, colors) {
+  const pw = size * 0.50, ph = size * 0.64;
+  const x = (size - pw) / 2, y = (size - ph) / 2;
+  const fold = size * 0.15, sw = size * 0.016;
+  const lx = x + pw * 0.18, lw = pw * 0.64;
+  const l1 = y + ph * 0.52, gap = ph * 0.13, lh = Math.max(1, size * 0.022);
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    <rect width="${size}" height="${size}" fill="${colors.surface2}"/>
+    <path d="M${x} ${y} H${x + pw - fold} L${x + pw} ${y + fold} V${y + ph} H${x} Z"
+      fill="${colors.surface}" stroke="${colors.accent}" stroke-width="${sw}" stroke-linejoin="round"/>
+    <path d="M${x + pw - fold} ${y} V${y + fold} H${x + pw}"
+      fill="none" stroke="${colors.accent}" stroke-width="${sw}" stroke-linejoin="round"/>
+    <rect x="${lx}" y="${l1}" width="${lw}" height="${lh}" rx="${lh / 2}" fill="${colors.accent}" opacity="0.75"/>
+    <rect x="${lx}" y="${l1 + gap}" width="${lw}" height="${lh}" rx="${lh / 2}" fill="${colors.accent}" opacity="0.55"/>
+    <rect x="${lx}" y="${l1 + gap * 2}" width="${lw * 0.6}" height="${lh}" rx="${lh / 2}" fill="${colors.accent}" opacity="0.35"/>
+  </svg>`;
+}
+async function renderPdfThumb(size, colors) {
+  const px = clampInt(size, 200, 800, SETTINGS_DEFAULTS.thumbSize);
+  return sharp(Buffer.from(pdfIconSvg(px, colors))).jpeg({ quality: 80 }).toBuffer();
+}
+
 async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
   const isVideo = file.mimetype.startsWith('video/');
+  const isPdf = isPdfMime(file.mimetype);
   const hash = contentHash(file.buffer);
   const dup = db.photos.find(p => isAlive(p) && p.ownerId === ownerId && p.hash === hash);
   if (dup) return { duplicate: true, existingId: dup.id };
@@ -1409,6 +1477,17 @@ async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
       fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
       rec.thumbIv = e2.iv; rec.thumbTag = e2.tag;
     }
+  } else if (isPdf) {
+    // Ganzdatei-GCM wie bei Fotos; Thumbnail ist das generierte Symbol.
+    // Keine EXIF-/Aufnahmezeit – für PDFs bleibt es beim Upload-Zeitpunkt.
+    const e1 = encryptGCM(file.buffer, key);
+    fs.writeFileSync(path.join(PHOTOS_DIR, `${photoId}.enc`), e1.data);
+    rec.iv = e1.iv; rec.tag = e1.tag;
+    const s = getSettings(db);
+    const thumbBuffer = await renderPdfThumb(s.thumbSize, s.colors);
+    const e2 = encryptGCM(thumbBuffer, key);
+    fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
+    rec.thumbIv = e2.iv; rec.thumbTag = e2.tag;
   } else {
     const e1 = encryptGCM(file.buffer, key);
     fs.writeFileSync(path.join(PHOTOS_DIR, `${photoId}.enc`), e1.data);
@@ -1508,7 +1587,7 @@ app.post('/api/photos/upload-init', requireAuth, requireDEK, (req, res) => {
   if (effectiveHidden(db, albumId) && !isUnlocked(req, db, albumId)) return res.status(423).json({ error: 'Album locked', code: 'LOCKED' });
   const isImage = typeof mimeType === 'string' && mimeType.startsWith('image/');
   const isVideo = typeof mimeType === 'string' && /^video\/(mp4|webm|quicktime)$/.test(mimeType);
-  if (!isImage && !isVideo) return res.status(400).json({ error: 'Images or videos (mp4/webm/mov) only' });
+  if (!isImage && !isVideo && !isPdfMime(mimeType)) return res.status(400).json({ error: 'Images, videos (mp4/webm/mov) or PDF only' });
   if (!Number.isInteger(size) || size < 1 || size > MAX_UPLOAD_SIZE) return res.status(400).json({ error: 'File too large (max 200 MB)' });
   if (!Number.isInteger(partSize) || partSize < 1024 * 1024 || partSize > MAX_PART_SIZE) return res.status(400).json({ error: 'Invalid part size' });
   let mine = 0;
@@ -1611,6 +1690,7 @@ function mapPhoto(db, me, req, p, albumId) {
   return { id: p.id, albumId: p.albumId, linkedHere: (isOwn || me.type === 'admin') && p.albumId !== albumId, originalName: p.originalName, uploadedAt: p.uploadedAt, takenAt: p.takenAt || null, size: p.size,
     ownerId: p.ownerId, ownerName: owner?.username ?? '?', shared: p.shared || false,
     mimeType: p.mimeType || 'image/jpeg',
+    isPdf: isPdfMime(p.mimeType),                              // 2.6.0
     streamable: p.encFormat === 'chunked',
     hasThumb: !!p.thumbIv,
     pending: !!keyInfo.pending,
@@ -1969,7 +2049,11 @@ app.get('/api/photos/:id/full', requireAuth, (req, res) => {
     if (countViewOnce(db, photo, req.session.userId)) saveDB(db);
   }
   try {
-    res.set('Content-Type', photo.mimeType || 'image/jpeg');
+    // 2.6.0: PDFs bewusst NICHT als application/pdf ausliefern. Sonst würde ein
+    // direkt aufgerufener Endpoint den eingebauten Viewer des Browsers öffnen –
+    // inklusive Download- und Druckknopf, vorbei an der Canvas-Anzeige. pdf.js
+    // holt die Bytes per fetch(), der Content-Type ist dafür ohne Bedeutung.
+    res.set('Content-Type', isPdfMime(photo.mimeType) ? 'application/octet-stream' : (photo.mimeType || 'image/jpeg'));
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.set('X-Content-Type-Options', 'nosniff');
     if (photo.encFormat === 'chunked') { res.send(decryptChunkedAll(f, photo, keyInfo.key)); return; }
@@ -2261,7 +2345,7 @@ function serveIcon(size) {
 app.get('/icon-192.png', serveIcon(192));
 app.get('/icon-512.png', serveIcon(512));
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', version: APP_VERSION }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', version: APP_VERSION, pdfjs: PDFJS_VERSION }));
 app.use((err, req, res, next) => {
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'Payload too large' });
   if (err.type === 'entity.parse.failed') return res.status(400).json({ error: 'Invalid JSON' });

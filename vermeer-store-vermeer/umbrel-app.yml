@@ -2,10 +2,11 @@ manifestVersion: 1
 id: vermeer-store-vermeer
 category: files
 name: Vermeer
-version: "2.5.0"
-tagline: Encrypted photo and video albums – private by design
+version: "2.6.0"
+tagline: Encrypted photo, video and document albums – private by design
 description: >-
-  Vermeer keeps your photos and videos AES-256 encrypted on your own Umbrel.
+  Vermeer keeps your photos, videos and PDF documents AES-256 encrypted on
+  your own Umbrel.
   Every file is encrypted server-side – neither originals, nor thumbnails,
   nor video poster frames are stored in plain text on disk. Your password
   derives your personal key; the keys themselves never touch the disk
@@ -15,7 +16,9 @@ description: >-
   Features:
 
 
-  - AES-256-GCM encryption for photos, videos, thumbnails and poster frames
+  - AES-256-GCM encryption for photos, videos, PDFs, thumbnails and poster frames
+
+  - PDF documents in albums, shown page by page in the app – no download button
 
   - Real video streaming from encrypted storage (MP4 / WebM / MOV, chunked format)
 
@@ -46,27 +49,25 @@ description: >-
 
   First login: admin / admin – change the password immediately.
 releaseNotes: >-
-  2.5.0 – A round of small conveniences plus one invisible but important
-  safety net.
+  2.6.0 – Albums can now hold PDF documents.
 
 
-  Photos can now be moved to any position inside an album: select one photo,
-  press "Position", then tap the photo it should go behind. No dragging, so it
-  works the same on a phone as on a desktop. A new sort menu offers "by capture
-  date", which uses the capture time read from the file during import.
+  Upload a PDF the same way as a photo: it appears as a tile with a document
+  symbol, and opening it shows the document page by page inside the app, with
+  several zoom levels. Everything else works exactly as it does for photos –
+  albums, links, favourites, ordering, duplicate detection, the ten-minute
+  undo after deleting, sharing with observers and the ZIP export.
 
 
-  Also new: mark photos as favourites and view them all in one place, a
-  slideshow button in the large view, duplicate files are recognised during
-  upload and skipped, and deleting now shows an "Undo" button for ten minutes
-  before anything is actually removed. Admins see how full the disk is.
+  PDFs are encrypted on disk just like photos and videos. They are displayed
+  by rendering each page in the app rather than handing the file to the
+  browser's built-in PDF viewer, so there is no download or print button and
+  the same protection applies as for pictures. As always: anyone who can see a
+  document on screen can photograph the screen.
 
 
-  Under the hood, the database is now written with a full sync and keeps five
-  rolling backups; if the main file is ever damaged, the app falls back to the
-  newest usable copy instead of starting empty. The interface is no longer
-  cached, so updates take effect immediately without clearing website data.
-  The gallery can be added to a phone's home screen.
+  Note: scanned documents in Chinese, Japanese or Korean may show missing
+  characters – the character tables for those scripts are not shipped.
 
 
   Updating from 2.x keeps all data, albums and users.
