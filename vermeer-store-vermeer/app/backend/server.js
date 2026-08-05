@@ -20,7 +20,7 @@ const FileStore = require('session-file-store')(session);
 
 const app  = express();
 const PORT = process.env.PORT || 3000;
-const APP_VERSION = '2.6.0';
+const APP_VERSION = '2.7.0';
 
 // ─── PDF-Dokumente (2.6.0) ────────────────────────────────────────
 // Ein PDF ist aus Sicht der Speicherung exakt ein Foto: eine Ganzdatei,
@@ -33,6 +33,17 @@ const APP_VERSION = '2.6.0';
 const PDF_MIME = 'application/pdf';
 function isPdfMime(m) { return String(m || '') === PDF_MIME; }
 
+// ─── Animierte GIF-Dateien (2.7.0) ────────────────────────────────
+// Ein GIF ist aus Sicht der Speicherung ebenfalls ein ganz normales Foto:
+// Ganzdatei-AES-256-GCM, kein eigener Verschlüsselungskontext, Thumbnail
+// per sharp. sharp liest ohne `animated:true` bewusst nur die ERSTE Seite –
+// die Kachel bleibt damit ein Standbild (klein, schnell, wie bisher).
+// Unterschiedlich ist allein die Großansicht: ein Canvas kann keine
+// Animation zeigen, deshalb rendert das Frontend GIFs als <img> und
+// begrenzt sie über die eigene Einstellung `lbMaxGifPx` (Default 200 px).
+const GIF_MIME = 'image/gif';
+function isGifMime(m) { return String(m || '') === GIF_MIME; }
+
 // ─── Galerie-Einstellungen (Admin, ab 1.11.0) ─────────────────────
 // Persistiert in db.json unter `settings`. Alle Werte sind reine
 // Darstellungs-/Verarbeitungsparameter (keine Krypto-Relevanz).
@@ -42,6 +53,7 @@ const SETTINGS_DEFAULTS = Object.freeze({
   taglineEn: 'Encrypted Photo Management',      // Untertitel Login-Screen (EN)
   lbMaxPhotoPx: 1200,       // Lightbox: längste Kante Fotos
   lbMaxVideoPx: 800,        // Lightbox: längste Kante Videos
+  lbMaxGifPx: 200,          // Lightbox: längste Kante animierter GIFs (2.7.0)
   thumbSize: 400,           // Kachel-Thumbnails/Video-Poster (gilt nur für NEUE Uploads)
   colors: Object.freeze({   // CSS-Variablen des Frontends (1.12.0)
     accent:  '#c8a96e', accent2: '#e8c98a',
@@ -74,6 +86,9 @@ function sanitizeSettings(raw) {
     taglineEn: (tagEn && TAGLINE_RE.test(tagEn)) ? tagEn : SETTINGS_DEFAULTS.taglineEn,
     lbMaxPhotoPx: clampInt(s.lbMaxPhotoPx, 400, 4000, SETTINGS_DEFAULTS.lbMaxPhotoPx),
     lbMaxVideoPx: clampInt(s.lbMaxVideoPx, 400, 4000, SETTINGS_DEFAULTS.lbMaxVideoPx),
+    // GIFs sind typischerweise klein und sollen klein bleiben – deshalb geht
+    // die Untergrenze hier bewusst bis 50 px hinunter (Foto/Video: 400).
+    lbMaxGifPx:   clampInt(s.lbMaxGifPx,    50, 4000, SETTINGS_DEFAULTS.lbMaxGifPx),
     thumbSize:    clampInt(s.thumbSize,    200, 800,  SETTINGS_DEFAULTS.thumbSize),
     colors
   };
@@ -1501,6 +1516,11 @@ async function storeIncomingFile(db, file, albumId, ownerId, key, enc) {
       const taken = parseExifDateTime(md && md.exif);
       if (taken) rec.takenAt = taken;
     } catch {}
+    // 2.7.0: Auch animierte GIFs laufen genau hier durch. sharp wird bewusst
+    // OHNE `{ animated: true }` aufgerufen – es liest damit nur die erste
+    // Seite, und das Thumbnail bleibt ein kleines JPEG-Standbild wie bei jedem
+    // anderen Foto. Ein animiertes Thumbnail hätte Kachelraster, Filmstreifen
+    // und Album-Cover deutlich teurer gemacht, ohne echten Gewinn.
     const thumbBuffer = await sharp(file.buffer).resize(ts, ts, { fit: 'cover', position: 'centre' }).jpeg({ quality: 75 }).toBuffer();
     const e2 = encryptGCM(thumbBuffer, key);
     fs.writeFileSync(path.join(THUMBS_DIR, `${photoId}.enc`), e2.data);
@@ -1691,6 +1711,7 @@ function mapPhoto(db, me, req, p, albumId) {
     ownerId: p.ownerId, ownerName: owner?.username ?? '?', shared: p.shared || false,
     mimeType: p.mimeType || 'image/jpeg',
     isPdf: isPdfMime(p.mimeType),                              // 2.6.0
+    isGif: isGifMime(p.mimeType),                              // 2.7.0
     streamable: p.encFormat === 'chunked',
     hasThumb: !!p.thumbIv,
     pending: !!keyInfo.pending,
@@ -2260,7 +2281,7 @@ app.get('/api/settings', (req, res) => {
   res.json(getSettings(db));
 });
 app.put('/api/settings', requireAdmin, (req, res) => {
-  const { galleryName, taglineDe, taglineEn, lbMaxPhotoPx, lbMaxVideoPx, thumbSize, colors } = req.body || {};
+  const { galleryName, taglineDe, taglineEn, lbMaxPhotoPx, lbMaxVideoPx, lbMaxGifPx, thumbSize, colors } = req.body || {};
   if (galleryName !== undefined) {
     const name = String(galleryName).trim();
     if (!GALLERY_NAME_RE.test(name)) return res.status(400).json({ error: 'Invalid gallery name (1-40 chars, no < >)' });
@@ -2285,6 +2306,7 @@ app.put('/api/settings', requireAdmin, (req, res) => {
     taglineEn:    taglineEn    !== undefined ? taglineEn    : current.taglineEn,
     lbMaxPhotoPx: lbMaxPhotoPx !== undefined ? lbMaxPhotoPx : current.lbMaxPhotoPx,
     lbMaxVideoPx: lbMaxVideoPx !== undefined ? lbMaxVideoPx : current.lbMaxVideoPx,
+    lbMaxGifPx:   lbMaxGifPx   !== undefined ? lbMaxGifPx   : current.lbMaxGifPx,
     thumbSize:    thumbSize    !== undefined ? thumbSize    : current.thumbSize,
     colors:       colors       !== undefined ? Object.assign({}, current.colors, colors) : current.colors
   });

@@ -365,6 +365,24 @@
   .lb-pdf-note{color:var(--muted);font-size:13px;padding:24px;text-align:center}
   .lb-pdf-info{font-size:12px;color:var(--muted);white-space:nowrap}
 
+  /* ── 2.7.0: animierte GIFs ──
+     Ein Canvas zeigt nur ein Standbild, deshalb wird ein GIF in der
+     Großansicht als <img> dargestellt. Der Wrapper liegt UNTER dem
+     Speicherschutz-Overlay (z-index 1) – anders als beim PDF, denn hier gibt
+     es nichts zu scrollen oder zu zoomen, und Klick/Tap sollen die Lightbox
+     schließen wie bei einem Foto. Bewusst kein Hochskalieren: ein kleines
+     GIF wird in seiner natürlichen Größe gezeigt und nur nach oben
+     gedeckelt (lbMaxGifPx). */
+  .gif-badge{position:absolute;right:6px;bottom:6px;z-index:2;background:rgba(0,0,0,.65);
+    color:#fff;border-radius:4px;padding:2px 6px;font-size:10px;letter-spacing:.06em;
+    font-weight:600;backdrop-filter:blur(2px);pointer-events:none}
+  #lb-gif-wrap{position:relative;display:none;border-radius:6px;overflow:hidden;
+    box-shadow:0 24px 80px rgba(0,0,0,.8);line-height:0}
+  #lb-gif-wrap.open{display:block}
+  #lb-gif{display:block;user-select:none;-webkit-user-select:none;
+    -webkit-user-drag:none;pointer-events:none}
+  #lb-gif-wm{position:absolute;inset:0;pointer-events:none;background-repeat:repeat}
+
   /* ── 2.5.0: Favoriten, Positionswechsel, Undo ── */
   .fav-badge{position:absolute;top:6px;right:6px;z-index:2;font-size:14px;line-height:1;
     text-shadow:0 1px 4px rgba(0,0,0,.9);pointer-events:none}
@@ -715,6 +733,10 @@
           <label data-i18n="gset.video_px"></label>
           <input type="number" id="gset-video-px" min="400" max="4000" step="50">
         </div>
+        <div class="form-group">
+          <label data-i18n="gset.gif_px"></label>
+          <input type="number" id="gset-gif-px" min="50" max="4000" step="10">
+        </div>
         <p style="color:var(--muted);font-size:12px;margin-top:6px" data-i18n="gset.px_hint"></p>
       </div>
     </div>
@@ -754,6 +776,8 @@
     <!-- PDF-Anzeige (2.6.0): pdf.js rendert jede Seite in ein eigenes Canvas -->
     <div id="lb-pdf"></div>
   <canvas id="lightbox-img" style="max-width:100%;max-height:100%;border-radius:6px;box-shadow:0 24px 80px rgba(0,0,0,.8);display:block"></canvas>
+  <!-- GIF-Anzeige (2.7.0): <img> statt Canvas, sonst stünde die Animation still -->
+  <div id="lb-gif-wrap"><img id="lb-gif" alt=""><div id="lb-gif-wm"></div></div>
   <video id="lb-video" controls playsinline controlsList="nodownload" disablepictureinpicture
     style="display:none;max-width:min(100%,800px);max-height:min(calc(100vh - 100px),800px);border-radius:6px;box-shadow:0 24px 80px rgba(0,0,0,.8)"></video>
     <button class="lb-arrow right" id="lb-next" onclick="lbNavigate(1)">&#8250;</button>
@@ -1014,7 +1038,7 @@
   </div>
 </div>
 <div id="toast"></div>
-<input type="file" id="file-input" multiple accept="image/*,video/mp4,video/webm,video/quicktime,application/pdf,.mp4,.webm,.mov,.pdf" style="display:none" onchange="handleFiles(this.files)">
+<input type="file" id="file-input" multiple accept="image/*,video/mp4,video/webm,video/quicktime,application/pdf,.gif,.mp4,.webm,.mov,.pdf" style="display:none" onchange="handleFiles(this.files)">
 
 <script>
 // ═══════════════════════════════════════════════════════════════════
@@ -1039,7 +1063,8 @@ const T = {
     'gset.display':'Darstellung (Lightbox)',
     'gset.photo_px':'Fotos: max. Kantenlänge in Pixel (400–4000)',
     'gset.video_px':'Videos: max. Kantenlänge in Pixel (400–4000)',
-    'gset.px_hint':'Begrenzt die längste Kante in der Großansicht. Der Bildschirm bleibt immer die engere Grenze; die Originale sind nicht betroffen.',
+    'gset.gif_px':'GIFs: max. Kantenlänge in Pixel (50–4000)',
+    'gset.px_hint':'Begrenzt die längste Kante in der Großansicht. Der Bildschirm bleibt immer die engere Grenze; die Originale sind nicht betroffen. GIFs werden nie über ihre natürliche Größe hinaus vergrößert.',
     'gset.thumbs':'Kacheln',
     'gset.thumb_px':'Thumbnail-/Poster-Größe in Pixel (200–800)',
     'gset.thumb_hint':'Gilt nur für neu hochgeladene Fotos und Videos. Bestehende Kacheln behalten ihre Größe.',
@@ -1239,7 +1264,8 @@ const T = {
     'gset.display':'Display (lightbox)',
     'gset.photo_px':'Photos: max. edge length in pixels (400–4000)',
     'gset.video_px':'Videos: max. edge length in pixels (400–4000)',
-    'gset.px_hint':'Limits the longest edge in the full view. The screen always remains the tighter limit; originals are not affected.',
+    'gset.gif_px':'GIFs: max. edge length in pixels (50–4000)',
+    'gset.px_hint':'Limits the longest edge in the full view. The screen always remains the tighter limit; originals are not affected. GIFs are never enlarged beyond their natural size.',
     'gset.thumbs':'Tiles',
     'gset.thumb_px':'Thumbnail / poster size in pixels (200–800)',
     'gset.thumb_hint':'Applies only to newly uploaded photos and videos. Existing tiles keep their size.',
@@ -1619,6 +1645,7 @@ function fillGallerySettingsForm(){
   document.getElementById('gset-tagline-en').value=appSettings.taglineEn;
   document.getElementById('gset-photo-px').value=appSettings.lbMaxPhotoPx;
   document.getElementById('gset-video-px').value=appSettings.lbMaxVideoPx;
+  document.getElementById('gset-gif-px').value=appSettings.lbMaxGifPx;
   document.getElementById('gset-thumb-px').value=appSettings.thumbSize;
   // Farb-Picker dynamisch aufbauen (Label aus i18n, Wert aus Settings)
   const grid=document.getElementById('gset-colors');
@@ -1644,6 +1671,7 @@ async function saveGallerySettings(){
     taglineEn:document.getElementById('gset-tagline-en').value.trim(),
     lbMaxPhotoPx:parseInt(document.getElementById('gset-photo-px').value,10),
     lbMaxVideoPx:parseInt(document.getElementById('gset-video-px').value,10),
+    lbMaxGifPx:parseInt(document.getElementById('gset-gif-px').value,10),
     thumbSize:parseInt(document.getElementById('gset-thumb-px').value,10),
     colors
   };
@@ -2545,6 +2573,13 @@ async function loadPhotos(albumId,wrap){
         imgWrap.appendChild(pb);
       }
 
+      // GIF-Kennzeichnung (2.7.0): das Thumbnail ist ein Standbild der ersten
+      // Seite – das Badge sagt, dass sich in der Großansicht etwas bewegt.
+      if(p.isGif){
+        const gb=document.createElement('div');gb.className='gif-badge';gb.textContent='GIF';
+        imgWrap.appendChild(gb);
+      }
+
       card.appendChild(imgWrap);
 
       // ── Info (Beobachter sehen nur das Bild – kein Name, kein Datum) ──
@@ -3257,6 +3292,89 @@ function pdfZoom(dir){
 // Ab 1.11.0 admin-konfigurierbar (Galerie-Einstellungen); Fallback = alte Konstanten.
 function LB_PHOTO_PX(){return appSettings.lbMaxPhotoPx||1200;}
 function LB_VIDEO_PX(){return appSettings.lbMaxVideoPx||800;}
+// 2.7.0: eigene Grenze für animierte GIFs (Default 200 px). Sie sind meist
+// klein und wirken formatfüllend hochskaliert unruhig.
+function LB_GIF_PX(){return appSettings.lbMaxGifPx||200;}
+
+// ═══ ANIMIERTE GIFs (2.7.0) ═══════════════════════════════════════
+// Ein GIF läuft nur in einem <img>. Der Canvas-Weg der Fotos würde ein
+// Standbild zeigen (drawImage kopiert genau einen Frame), und ein manuelles
+// Frame-Rendering setzte den ImageDecoder voraus, den ältere Safari- und
+// Firefox-Fassungen nicht haben. Die Bytes kommen wie bei jedem Foto über
+// /full und werden als Blob-URL gesetzt – nichts liegt unverschlüsselt auf
+// der Platte, und das Speicherschutz-Overlay bleibt aktiv.
+// Ehrlich benannte Grenze: Der Schutz ist derselbe wie bei Fotos, also
+// Sichtschutz. Wer eine Animation sehen kann, kann sie aufnehmen.
+var gifToken=0;   // bricht spät ankommende Ladevorgänge ab (Muster aus 1.1.2)
+
+function stopLbGif(){
+  gifToken++;
+  const wrap=document.getElementById('lb-gif-wrap');
+  const img=document.getElementById('lb-gif');
+  if(img){
+    if(img._url){URL.revokeObjectURL(img._url);img._url=null;}
+    img.removeAttribute('src');
+    img.style.width='';img.style.height='';
+  }
+  if(wrap)wrap.classList.remove('open');
+  const wm=document.getElementById('lb-gif-wm');
+  if(wm)wm.style.backgroundImage='';
+}
+
+// Wasserzeichen für die GIF-Anzeige. Bei Fotos wird es ins Canvas gezeichnet;
+// hier entsteht dieselbe Kachel einmalig als Bild und liegt als
+// CSS-Hintergrund über der Animation. Bedingung identisch zu addWatermark:
+// nur wenn der Benutzer das Wasserzeichen eingeschaltet hat.
+function gifWatermarkTile(username){
+  if(localStorage.getItem('vermeer_wm')!=='1')return '';
+  const c=document.createElement('canvas');c.width=300;c.height=150;
+  const ctx=c.getContext('2d');
+  ctx.globalAlpha=0.06;ctx.fillStyle='#ffffff';
+  ctx.font='14px DM Sans, sans-serif';
+  ctx.translate(150,75);ctx.rotate(-Math.PI/6);
+  ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(`${appSettings.galleryName||'Vermeer'} · ${username}`,0,0);
+  try{return c.toDataURL('image/png');}catch{return '';}
+}
+
+// Anzeigegröße eines GIFs: längste Kante auf `lim` begrenzt, Seitenverhältnis
+// erhalten. Bewusst NIE hochskalieren (Faktor max. 1) – ein 80-px-GIF auf
+// 200 px aufgeblasen wird nur unscharf, gerade bei Pixelgrafik. Der Viewport
+// bleibt die engere Grenze (40 px seitlich, 140 px für Kopfzeile und
+// Filmstreifen). Ausgelagert, damit die Arithmetik testbar bleibt.
+function gifDisplaySize(nw,nh,lim,vw,vh){
+  const availW=Math.min(vw-40,lim);
+  const availH=Math.min(vh-140,lim);
+  const scale=Math.min(availW/nw,availH/nh,1);
+  return {w:Math.max(1,Math.round(nw*scale)),h:Math.max(1,Math.round(nh*scale))};
+}
+
+function renderGif(p){
+  const token=++gifToken;
+  const wrap=document.getElementById('lb-gif-wrap');
+  const img=document.getElementById('lb-gif');
+  if(!wrap||!img)return;
+  wrap.classList.add('open');
+  fetch(`/api/photos/${p.id}/full`).then(r=>r.ok?r.blob():null).then(b=>{
+    if(!b||token!==gifToken)return;
+    const url=URL.createObjectURL(b);
+    img._url=url;
+    img.onload=()=>{
+      if(token!==gifToken){URL.revokeObjectURL(url);return;}
+      const lim=LB_GIF_PX();
+      const nw=img.naturalWidth||lim, nh=img.naturalHeight||lim;
+      const box=gifDisplaySize(nw,nh,lim,window.innerWidth,window.innerHeight);
+      img.style.width=box.w+'px';
+      img.style.height=box.h+'px';
+      const wm=document.getElementById('lb-gif-wm');
+      if(wm){
+        const tile=(me&&me.username)?gifWatermarkTile(me.username):'';
+        wm.style.backgroundImage=tile?`url(${tile})`:'';
+      }
+    };
+    img.src=url;
+  }).catch(()=>{});
+}
 function renderLightbox(){
   const p=lbPhotos[lbIndex];if(!p)return;
   // View exakt einmal pro Öffnung zählen (Server dedupliziert zusätzlich 10 Min)
@@ -3276,6 +3394,9 @@ function renderLightbox(){
   // laufende Renderaufträge verwerfen) – sonst bliebe es beim Wechsel auf ein
   // Foto oder Video über der Anzeige stehen.
   stopLbPdf();
+  // 2.7.0: dasselbe für ein evtl. offenes GIF – Blob freigeben, Ladevorgang
+  // per Token verwerfen, Wrapper schließen.
+  stopLbGif();
   // ── PDF-Dokument (2.6.0) ──
   if(p.isPdf||p.mimeType==='application/pdf'){
     canvas.style.display='none';
@@ -3286,6 +3407,18 @@ function renderLightbox(){
     if(ov)ov.style.display='none';
     renderPdf(p);
     scheduleSlide();   // Diashow behandelt ein PDF wie ein Foto (feste Dauer)
+    return;
+  }
+  // ── Animiertes GIF (2.7.0) ──
+  if(p.isGif||p.mimeType==='image/gif'){
+    canvas.style.display='none';
+    if(vid){vid.pause();vid.style.display='none';if(vid._url){URL.revokeObjectURL(vid._url);vid._url=null;}vid.src='';}
+    // Overlay bleibt AKTIV (anders als bei Video und PDF): Am GIF gibt es
+    // nichts zu bedienen, es verhält sich wie ein Foto – Klick schließt,
+    // Wisch blättert, Rechtsklick ist geblockt.
+    if(ov)ov.style.display='';
+    renderGif(p);
+    scheduleSlide();   // Diashow: feste Dauer wie bei einem Foto
     return;
   }
   // ── Video-Wiedergabe ──
@@ -3396,6 +3529,7 @@ function closeLightbox(){
   stopSlideshow();
   stopLbVideo();
   stopLbPdf();
+  stopLbGif();
   document.getElementById('lightbox').classList.remove('open');
   const canvas=document.getElementById('lightbox-img');
   const ctx=canvas.getContext('2d');

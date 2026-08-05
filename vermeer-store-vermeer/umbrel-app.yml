@@ -2,7 +2,7 @@ manifestVersion: 1
 id: vermeer-store-vermeer
 category: files
 name: Vermeer
-version: "2.6.0"
+version: "2.7.0"
 tagline: Encrypted photo, video and document albums – private by design
 description: >-
   Vermeer keeps your photos, videos and PDF documents AES-256 encrypted on
@@ -19,6 +19,8 @@ description: >-
   - AES-256-GCM encryption for photos, videos, PDFs, thumbnails and poster frames
 
   - PDF documents in albums, shown page by page in the app – no download button
+
+  - Animated GIFs with their own display size limit
 
   - Real video streaming from encrypted storage (MP4 / WebM / MOV, chunked format)
 
@@ -49,26 +51,20 @@ description: >-
 
   First login: admin / admin – change the password immediately.
 releaseNotes: >-
-  2.6.0 – Albums can now hold PDF documents.
+  2.7.0 – Animated GIFs now play in the full view.
 
+  A GIF is uploaded, stored and encrypted exactly like any other photo, and it
+  keeps everything photos have: albums, links, favourites, ordering, duplicate
+  detection, the ten-minute undo after deleting, observer access and the ZIP
+  export. What changed is the display – photos are drawn into a canvas, which
+  shows a still frame only, so GIFs are now shown as an image instead and the
+  animation runs.
 
-  Upload a PDF the same way as a photo: it appears as a tile with a document
-  symbol, and opening it shows the document page by page inside the app, with
-  several zoom levels. Everything else works exactly as it does for photos –
-  albums, links, favourites, ordering, duplicate detection, the ten-minute
-  undo after deleting, sharing with observers and the ZIP export.
-
-
-  PDFs are encrypted on disk just like photos and videos. They are displayed
-  by rendering each page in the app rather than handing the file to the
-  browser's built-in PDF viewer, so there is no download or print button and
-  the same protection applies as for pictures. As always: anyone who can see a
-  document on screen can photograph the screen.
-
-
-  Note: scanned documents in Chinese, Japanese or Korean may show missing
-  characters – the character tables for those scripts are not shipped.
-
+  Because GIFs are usually small, they get their own size limit: by default the
+  longest edge is capped at 200 pixels. Administrators can change this under
+  Gallery Settings → Display (50–4000 pixels). GIFs are never enlarged beyond
+  their natural size. The tile still shows a still frame of the first image,
+  marked with a GIF badge.
 
   Updating from 2.x keeps all data, albums and users.
 developer: Vermeer
