@@ -1686,10 +1686,21 @@ async function saveGallerySettings(){
   }catch{msg.textContent=t('gset.error');}
 }
 
+// Cursor beim Start in das Benutzerfeld setzen (2.7.1). Bewusst per JS statt
+// per autofocus-Attribut: das Attribut würde schon beim Parsen feuern, also
+// auch bei bestehender Sitzung – auf dem Handy blitzte dann kurz die Tastatur
+// auf, bevor bootApp() den Login-Screen ausblendet.
+function focusLoginUser(){
+  const scr=document.getElementById('login-screen');
+  const el=document.getElementById('l-user');
+  if(!scr||!el||scr.style.display==='none')return;
+  try{el.focus({preventScroll:true});}catch{el.focus();}
+}
+
 async function checkSession(){
   try{
     const r=await fetch('/api/me');
-    if(!r.ok)return;
+    if(!r.ok){focusLoginUser();return;}
     me=await r.json();
     if(me.mustChangePassword){
       document.getElementById('setup-existing-warn').style.display='none';
@@ -1700,10 +1711,11 @@ async function checkSession(){
     if(!me.hasDEK){
       // Session valid but key lost (server restart) → force re-login
       await fetch('/api/logout',{method:'POST'});
+      focusLoginUser();
       return;
     }
     bootApp();
-  }catch{}
+  }catch{focusLoginUser();}
 }
 // ── Android/Browser Zurück-Navigation (Forward-Trap, v1.10.1) ────────
 // Es existieren dauerhaft genau ZWEI History-Einträge: Basis + Guard.
@@ -1961,27 +1973,27 @@ function renderStats(s, wrap) {
 
   // ── Top Photos ──
   renderStatsTable(wrap, `🖼 ${t('stats.top_photos')}`, s.topPhotos,
-    [t('stats.photo'), t('stats.album'), t('stats.owner'), t('stats.views'), t('stats.viewers'), ''],
+    [t('stats.photo'), t('stats.views'), t('stats.viewers'), t('stats.album'), t('stats.owner'), ''],
     (p, i, maxV) => `
       <td><span class="rank-badge ${i===0?'gold':i===1?'silver':i===2?'bronze':''}">${i+1}</span></td>
       <td><span class="stat-photo-link" data-pid="${p.id}" data-viewers="${encodeURIComponent(JSON.stringify(p.viewers||[]))}">${esc(p.name)}</span></td>
-      <td style="color:var(--muted);font-size:12px">${esc(p.albumName)}</td>
-      <td style="color:var(--muted);font-size:12px">${esc(p.ownerName)}</td>
       <td><strong>${p.views}</strong></td>
       <td style="color:var(--muted);font-size:12px;max-width:160px">${(p.viewers&&p.viewers.length)?esc(p.viewers.slice(0,3).map(v=>v.username).join(', '))+(p.viewers.length>3?' +'+(p.viewers.length-3):''):'–'}</td>
+      <td style="color:var(--muted);font-size:12px">${esc(p.albumName)}</td>
+      <td style="color:var(--muted);font-size:12px">${esc(p.ownerName)}</td>
       <td style="width:100px"><div class="bar-wrap"><div class="bar-fill" style="width:${Math.round(p.views/maxV*100)}%"></div></div></td>`,
     p => p.views
   );
 
   // ── Top Albums ──
   renderStatsTable(wrap, `📁 ${t('stats.top_albums')}`, s.topAlbums,
-    [t('stats.album'), t('stats.owner'), t('stats.photos'), t('stats.views'), ''],
+    [t('stats.album'), t('stats.views'), t('stats.photos'), t('stats.owner'), ''],
     (a, i, maxV) => `
       <td><span class="rank-badge ${i===0?'gold':i===1?'silver':i===2?'bronze':''}">${i+1}</span></td>
       <td>${esc(a.name)}</td>
-      <td style="color:var(--muted);font-size:12px">${esc(a.ownerName)}</td>
-      <td style="color:var(--muted)">${a.photoCount}</td>
       <td><strong>${a.views}</strong></td>
+      <td style="color:var(--muted)">${a.photoCount}</td>
+      <td style="color:var(--muted);font-size:12px">${esc(a.ownerName)}</td>
       <td style="width:100px"><div class="bar-wrap"><div class="bar-fill" style="width:${Math.round(a.views/maxV*100)}%"></div></div></td>`,
     a => a.views
   );

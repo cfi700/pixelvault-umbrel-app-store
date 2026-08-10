@@ -2,7 +2,7 @@ manifestVersion: 1
 id: vermeer-store-vermeer
 category: files
 name: Vermeer
-version: "2.7.0"
+version: "2.7.1"
 tagline: Encrypted photo, video and document albums – private by design
 description: >-
   Vermeer keeps your photos, videos and PDF documents AES-256 encrypted on
@@ -51,20 +51,15 @@ description: >-
 
   First login: admin / admin – change the password immediately.
 releaseNotes: >-
-  2.7.0 – Animated GIFs now play in the full view.
+  2.7.1 – Three small corrections.
 
-  A GIF is uploaded, stored and encrypted exactly like any other photo, and it
-  keeps everything photos have: albums, links, favourites, ordering, duplicate
-  detection, the ten-minute undo after deleting, observer access and the ZIP
-  export. What changed is the display – photos are drawn into a canvas, which
-  shows a still frame only, so GIFs are now shown as an image instead and the
-  animation runs.
+  The login screen now places the cursor in the username field straight away,
+  so you can start typing without clicking first.
 
-  Because GIFs are usually small, they get their own size limit: by default the
-  longest edge is capped at 200 pixels. Administrators can change this under
-  Gallery Settings → Display (50–4000 pixels). GIFs are never enlarged beyond
-  their natural size. The tile still shows a still frame of the first image,
-  marked with a GIF badge.
+  In the statistics, the columns of "Most viewed photos" and "Most viewed
+  albums" have been reordered so that the important numbers come first: photo,
+  views, viewers, album, owner – and album, views, photos, owner. The figures
+  themselves are unchanged.
 
   Updating from 2.x keeps all data, albums and users.
 developer: Vermeer
